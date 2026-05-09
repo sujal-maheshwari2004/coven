@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 
 from loom.models import DAG, Node, NodeStatus, DAGStatus
+from loom.mcp_builder import MCPNodeBuilder
 from .artifact_store import ArtifactStore
 from .agent_runner import AgentRunner
 
@@ -18,18 +20,23 @@ class Executor:
     Iterates through topological levels in order. Within each level,
     all nodes are launched concurrently via asyncio.gather().
 
+    If a MCPNodeBuilder is provided, domain nodes with non-empty
+    query_tool will have their MCP server built before execution.
+    MCP builds within a level also run in parallel.
+
     After each level completes:
     - Node statuses are updated in the DAG
     - Artifact store is populated with produced bodies
-    - Any failed nodes are reported and execution halts
-
-    This guarantees that when level N begins, all artifacts
-    from levels 0..N-1 are fully available in the store.
+    - Any failed nodes halt execution
     """
 
-    def __init__(self, model: str = "gpt-4o"):
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        mcp_builder: MCPNodeBuilder | None = None,
+    ):
         self.model   = model
-        self._runner = AgentRunner(model=model)
+        self._runner = AgentRunner(model=model, mcp_builder=mcp_builder)
 
     async def execute(self, dag: DAG) -> DAG:
         """
@@ -43,13 +50,11 @@ class Executor:
             Updated DAG with all node statuses and artifact bodies populated.
         """
         store = ArtifactStore(dag.artifacts)
-
-        dag = dag.model_copy(update={"status": DAGStatus.RUNNING})
+        dag   = dag.model_copy(update={"status": DAGStatus.RUNNING})
 
         for level_index, level in enumerate(dag.levels):
             logger.info(
-                f"Executing level {level_index}/{len(dag.levels) - 1}: "
-                f"{level}"
+                f"Executing level {level_index}/{len(dag.levels) - 1}: {level}"
             )
 
             dag, store = await self._execute_level(
@@ -72,7 +77,7 @@ class Executor:
         final_artifacts = await store.all()
         dag = dag.model_copy(update={
             "artifacts": final_artifacts,
-            "status": DAGStatus.COMPLETED,
+            "status":    DAGStatus.COMPLETED,
         })
 
         logger.info("DAG execution completed successfully.")
@@ -87,13 +92,9 @@ class Executor:
         """
         Execute all nodes in a single level concurrently.
 
-        Args:
-            level: List of node IDs to execute in parallel.
-            dag: Current DAG state.
-            store: Shared artifact store.
-
-        Returns:
-            Updated (DAG, store) after level completes.
+        MCP builds and agent LLM calls all run inside asyncio.gather —
+        ToolStorePy's blocking build() is wrapped in run_in_executor
+        inside MCPNodeBuilder so it doesn't block the event loop.
         """
         tasks = [
             self._runner.run(
@@ -106,12 +107,10 @@ class Executor:
 
         updated_nodes: list[Node] = await asyncio.gather(*tasks)
 
-        # ── Update node statuses in DAG ───────────────────────────────────────
         new_nodes = dict(dag.nodes)
         for node in updated_nodes:
             new_nodes[node.id] = node
             logger.info(f"  Node '{node.id}' → {node.status.value}")
 
         dag = dag.model_copy(update={"nodes": new_nodes})
-
         return dag, store

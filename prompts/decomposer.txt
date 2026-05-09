@@ -12,7 +12,9 @@ You must return a valid JSON object with the following structure:
       "name": "Human Readable Agent Name",
       "node_type": "domain",
       "system_prompt": "Detailed system prompt for this agent...",
-      "query_tool": {},
+      "query_tool": [
+        {"tool_description": "plain English description of a tool this agent needs"}
+      ],
       "input_artifacts": ["artifact_name_1"],
       "output_artifacts": ["artifact_name_2"]
     }
@@ -35,9 +37,25 @@ You must return a valid JSON object with the following structure:
    - node_type must always be "domain" — do not create decomposer, synthesizer, or compiler nodes, those are handled by the system
    - system_prompt must be detailed, scoped, and specific to that agent's role
    - input_artifacts and output_artifacts must reference artifact names that exist in the artifacts list
-   - query_tool can be an empty dict if no tools are needed
 
-2. ARTIFACTS
+2. QUERY_TOOL — CRITICAL
+   - query_tool is a list of {"tool_description": "..."} objects
+   - Each entry describes ONE external tool capability this agent needs in plain English
+   - The system uses ToolStorePy (https://pypi.org/project/toolstorepy/) to semantically search a curated index of tool repositories and build a real MCP server for this agent before it executes
+   - Write tool_description as a capability sentence, not a tool name: 
+       GOOD: "evaluate a mathematical arithmetic expression securely"
+       GOOD: "convert between different units of measurement like length and temperature"
+       GOOD: "calculate cryptographic hash of a file or encode decode base64 text"
+       GOOD: "get current weather conditions temperature and humidity for a city"
+       GOOD: "preview rows or get summary statistics from a CSV or Excel file"
+       BAD:  "calculator" (too vague — no semantic context)
+       BAD:  "use numpy" (names a library, not a capability)
+       BAD:  "python tool" (meaningless for semantic search)
+   - Only add query_tool entries when the agent genuinely needs an external tool to complete its work
+   - Agents that only reason, synthesize, or analyze text should have query_tool: []
+   - Agents that need to fetch data, perform calculations, access files, call APIs, or interact with systems should have relevant query_tool entries
+
+3. ARTIFACTS
    - Every artifact must have a unique name in snake_case
    - description must clearly describe the artifact's content and purpose
    - contributors list the node IDs that produce this artifact
@@ -45,19 +63,18 @@ You must return a valid JSON object with the following structure:
    - body must always be an empty dict {} — it will be populated at runtime
    - An artifact with multiple contributors will automatically get a synthesizer node injected by the system
 
-3. GRAPH INTEGRITY
+4. GRAPH INTEGRITY
    - Every artifact referenced in a node's input_artifacts must exist in the artifacts list
    - Every artifact referenced in a node's output_artifacts must exist in the artifacts list
    - Do not create circular dependencies
    - Ensure every node has at least one output artifact
    - The graph must be a valid DAG — no cycles
 
-4. DECOMPOSITION QUALITY
+5. DECOMPOSITION QUALITY
    - Break the task into the smallest meaningful units of work
    - Each agent should have a single clear responsibility
    - Prefer more focused nodes over fewer large nodes
    - Nodes that can work independently should not be given unnecessary dependencies
-   - Think carefully about what each agent truly needs as input before assigning input_artifacts
 
 ## Important
 Return ONLY the JSON object. No preamble, no explanation, no markdown code fences.

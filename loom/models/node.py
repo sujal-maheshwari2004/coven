@@ -3,17 +3,15 @@ from enum import Enum
 from typing import Any
 from pydantic import BaseModel, Field
 
-from .artifact import Artifact
-
 
 class NodeType(str, Enum):
     """
     The role of a node in the DAG pipeline.
     """
-    DECOMPOSER   = "decomposer"    # Meta — plans the DAG
-    DOMAIN       = "domain"        # Does actual task work
-    SYNTHESIZER  = "synthesizer"   # Auto-injected merge/QC node
-    COMPILER     = "compiler"      # Final output assembly
+    DECOMPOSER   = "decomposer"
+    DOMAIN       = "domain"
+    SYNTHESIZER  = "synthesizer"
+    COMPILER     = "compiler"
 
 
 class NodeStatus(str, Enum):
@@ -26,6 +24,22 @@ class NodeStatus(str, Enum):
     FAILED     = "failed"
 
 
+class ToolQuery(BaseModel):
+    """
+    A single tool description passed to ToolStorePy.
+    Maps directly to one entry in queries.json format:
+        {"tool_description": "evaluate a mathematical expression securely"}
+    """
+    tool_description: str = Field(
+        ...,
+        description=(
+            "Plain English description of the tool this agent needs. "
+            "ToolStorePy uses this to semantically search and build the right MCP tool. "
+            "Example: 'evaluate a mathematical arithmetic expression securely'"
+        )
+    )
+
+
 class Node(BaseModel):
     """
     Represents a single agent in the DAG.
@@ -33,6 +47,10 @@ class Node(BaseModel):
     Every node is an agent — decomposer, domain, synthesizer, and compiler
     all share this same interface. The node type determines behavior,
     but the structure is uniform.
+
+    query_tool: list of ToolQuery objects. If non-empty, ToolStorePy will
+    build an MCP server for this node before execution, giving the agent
+    access to real tool implementations matching each description.
     """
 
     id: str = Field(
@@ -55,9 +73,15 @@ class Node(BaseModel):
         description="The system prompt that governs this agent's behavior and scope."
     )
 
-    query_tool: dict[str, Any] = Field(
-        default_factory=dict,
-        description="ToolStorePy compatible tool configuration for this agent."
+    query_tool: list[ToolQuery] = Field(
+        default_factory=list,
+        description=(
+            "List of tool descriptions for ToolStorePy. "
+            "Each entry describes one tool this agent needs in plain English. "
+            "ToolStorePy will semantically search its index and build a real MCP server "
+            "with matching tool implementations before this node executes. "
+            "Leave empty if the agent needs no external tools."
+        )
     )
 
     input_artifacts: list[str] = Field(
@@ -75,30 +99,41 @@ class Node(BaseModel):
         description="Current execution status of this node."
     )
 
-    # Populated at runtime after execution
     result: dict[str, Any] = Field(
         default_factory=dict,
         description="Raw LLM output after this node executes."
     )
 
-    # Only populated for synthesizer nodes
     contributor_system_prompts: list[str] = Field(
         default_factory=list,
-        description="System prompts of contributing agents. Used by synthesizer to understand contributor intent."
+        description="System prompts of contributing agents. Used by synthesizer nodes."
+    )
+
+    # Populated at runtime by MCPNodeBuilder if query_tool is non-empty
+    mcp_server_path: str | None = Field(
+        default=None,
+        description=(
+            "Absolute path to the ToolStorePy-built MCP server for this node. "
+            "Set at runtime. None if this node has no tool queries."
+        )
     )
 
     class Config:
         json_schema_extra = {
             "example": {
-                "id": "market_researcher",
-                "name": "Market Research Agent",
+                "id": "data_analyst",
+                "name": "Data Analysis Agent",
                 "node_type": "domain",
-                "system_prompt": "You are a market research specialist...",
-                "query_tool": {},
-                "input_artifacts": ["raw_data_summary"],
-                "output_artifacts": ["market_analysis_report"],
+                "system_prompt": "You are a data analyst...",
+                "query_tool": [
+                    {"tool_description": "preview rows and get summary statistics from a CSV file"},
+                    {"tool_description": "calculate cryptographic hash of a file"},
+                ],
+                "input_artifacts": ["raw_dataset"],
+                "output_artifacts": ["analysis_report"],
                 "status": "pending",
                 "result": {},
-                "contributor_system_prompts": []
+                "contributor_system_prompts": [],
+                "mcp_server_path": None,
             }
         }

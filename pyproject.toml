@@ -1,7 +1,7 @@
 [project]
 name = "loom-ai"
 version = "0.1.0"
-description = "A multi-agent DAG pipeline framework that decomposes complex tasks into coordinated agents"
+description = "A multi-agent DAG pipeline framework that decomposes complex tasks into coordinated agents with real tool execution via ToolStorePy"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -11,6 +11,7 @@ dependencies = [
     "pydantic>=2.7.0",
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
+    "toolstorepy>=0.1.0",
 ]
 
 [project.optional-dependencies]

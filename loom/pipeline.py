@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 
 from loom.models import DAG, DAGStatus
 from loom.decomposer import DecomposerAgent, DecomposerParser
 from loom.graph_builder import GraphBuilderAgent, GraphBuilderParser, GraphBuilderValidator
 from loom.sorter import TopologicalSorter, SorterValidator
 from loom.synthesizer import SynthesizerInjector
+from loom.mcp_builder import MCPNodeBuilder
 from loom.initiator import Executor
 from loom.compiler import CompilerAgent, CompilerFormatter, CompilerResponse, OutputSection
 
@@ -24,17 +26,52 @@ class Loom:
         2. Graph Builder  — validates and formalizes DAG edges
         3. Sorter         — topological sort into execution levels
         4. Initiator      — level-wise async agent execution
+                            (with per-node MCP server builds via ToolStorePy)
         5. Compiler       — assembles final output from all artifacts
 
     Usage:
         loom = Loom(model="gpt-4o")
         dag  = await loom.run("Produce a go-to-market strategy for a B2B SaaS product")
         print(loom.to_text(dag))
+
+    Tool usage:
+        Nodes whose query_tool list is non-empty will have a ToolStorePy MCP
+        server built for them automatically before execution. The decomposer
+        LLM decides which tools each node needs — just describe the task and
+        loom handles the rest.
     """
 
-    def __init__(self, model: str = "gpt-4o"):
-        self.model = model
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        workspace: str | Path = "loom_workspace",
+        mcp_index: str | None = "core-tools",
+        mcp_index_url: str | None = None,
+        mcp_install_requirements: bool = False,
+        mcp_verbose: bool = False,
+    ):
+        """
+        Args:
+            model: LiteLLM-compatible model string (e.g. "gpt-4o", "claude-sonnet-4-6").
+            workspace: Root directory for all run artifacts and MCP workspaces.
+            mcp_index: ToolStorePy built-in index name. Default: "core-tools".
+            mcp_index_url: Direct URL to a custom ToolStorePy index. Overrides mcp_index.
+            mcp_install_requirements: Install repo requirements in MCP venv.
+            mcp_verbose: Enable verbose ToolStorePy logging.
+        """
+        self.model     = model
+        self.workspace = Path(workspace)
 
+        # ── MCP builder — shared across all nodes in a run ────────────────────
+        self._mcp_builder = MCPNodeBuilder(
+            base_workspace=self.workspace,
+            index=mcp_index if not mcp_index_url else None,
+            index_url=mcp_index_url,
+            install_requirements=mcp_install_requirements,
+            verbose=mcp_verbose,
+        )
+
+        # ── Pipeline stages ───────────────────────────────────────────────────
         self._decomposer        = DecomposerAgent(model=model)
         self._decomposer_parser = DecomposerParser()
         self._graph_builder     = GraphBuilderAgent(model=model)
@@ -43,7 +80,7 @@ class Loom:
         self._sorter            = TopologicalSorter()
         self._sorter_validator  = SorterValidator()
         self._synth_injector    = SynthesizerInjector()
-        self._executor          = Executor(model=model)
+        self._executor          = Executor(model=model, mcp_builder=self._mcp_builder)
         self._compiler          = CompilerAgent(model=model)
         self._formatter         = CompilerFormatter()
 
@@ -107,21 +144,13 @@ class Loom:
         # ── Stage 5: Compile ──────────────────────────────────────────────────
         logger.info(f"[{dag_id}] Stage 5: Compiling final output...")
         compiler_response = await self._compiler.arun(dag)
-        dag = self._formatter.format(compiler_response, dag)
+        dag               = self._formatter.format(compiler_response, dag)
 
         logger.info(f"[{dag_id}] Pipeline complete.")
         return dag
 
     def to_text(self, dag: DAG) -> str:
-        """
-        Render the final DAG output as plain text.
-
-        Args:
-            dag: Completed DAG from run().
-
-        Returns:
-            Plain text string of the final output.
-        """
+        """Render the final DAG output as plain text."""
         if not dag.final_output:
             return "Pipeline did not produce a final output."
 

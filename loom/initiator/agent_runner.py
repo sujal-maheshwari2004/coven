@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import instructor
@@ -8,9 +9,12 @@ from litellm import completion
 from pydantic import BaseModel
 
 from loom.models import Node, NodeType, NodeStatus, Artifact
+from loom.mcp_builder import MCPNodeBuilder
 from .artifact_store import ArtifactStore
 from loom.synthesizer import SynthesizerAgent, SynthesizerParser
 
+
+logger = logging.getLogger(__name__)
 
 # ── Instructor client ─────────────────────────────────────────────────────────
 
@@ -33,18 +37,28 @@ class AgentRunner:
     """
     Executes a single node in the DAG.
 
-    Handles two node types:
-    - DOMAIN: standard LLM call with input artifacts as context
-    - SYNTHESIZER: delegates to SynthesizerAgent with partial artifacts
+    Before executing any domain node with non-empty query_tool:
+        1. Calls MCPNodeBuilder to build a dedicated MCP server via ToolStorePy
+        2. Stores the MCP server path on the node
+        3. Injects MCP server path into the agent's user message context
+
+    Handles two node types at execution time:
+        - DOMAIN: standard LLM call with input artifacts + optional MCP context
+        - SYNTHESIZER: delegates to SynthesizerAgent with partial artifacts
 
     After execution:
-    - Writes all output artifact bodies to the ArtifactStore
-    - Updates the node status to COMPLETED or FAILED
+        - Writes all output artifact bodies to the ArtifactStore
+        - Updates the node status to COMPLETED or FAILED
     """
 
-    def __init__(self, model: str = "gpt-4o"):
-        self.model = model
-        self._synth_agent = SynthesizerAgent(model=model)
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        mcp_builder: MCPNodeBuilder | None = None,
+    ):
+        self.model        = model
+        self._mcp_builder = mcp_builder
+        self._synth_agent  = SynthesizerAgent(model=model)
         self._synth_parser = SynthesizerParser()
 
     async def run(
@@ -59,12 +73,24 @@ class AgentRunner:
         Args:
             node: The node to execute.
             store: Shared artifact store.
-            nodes: Full node registry (for synthesizer context).
+            nodes: Full node registry.
 
         Returns:
             Updated Node with status set to COMPLETED or FAILED.
         """
         try:
+            # ── Build MCP server if node has tool queries ─────────────────────
+            if node.query_tool and self._mcp_builder:
+                mcp_path = self._mcp_builder.build_for_node(node)
+                if mcp_path:
+                    node = node.model_copy(
+                        update={"mcp_server_path": str(mcp_path)}
+                    )
+                    logger.info(
+                        f"Node '{node.id}' MCP server ready → {mcp_path}"
+                    )
+
+            # ── Execute node ──────────────────────────────────────────────────
             if node.node_type == NodeType.SYNTHESIZER:
                 await self._run_synthesizer(node, store)
             else:
@@ -73,6 +99,7 @@ class AgentRunner:
             return node.model_copy(update={"status": NodeStatus.COMPLETED})
 
         except Exception as e:
+            logger.error(f"Node '{node.id}' failed: {e}")
             return node.model_copy(
                 update={
                     "status": NodeStatus.FAILED,
@@ -84,8 +111,8 @@ class AgentRunner:
         """
         Execute a domain agent node.
 
-        Builds context from input artifacts, calls the LLM,
-        and writes each output artifact body to the store.
+        Builds context from input artifacts and optional MCP server info,
+        calls the LLM, and writes each output artifact body to the store.
         """
         input_artifacts = await store.get_many(node.input_artifacts)
         user_message    = self._build_domain_message(node, input_artifacts)
@@ -110,8 +137,8 @@ class AgentRunner:
         Retrieves all partial artifacts, delegates to SynthesizerAgent,
         and writes the merged artifact body to the store.
         """
-        partial_artifacts  = await store.get_many(node.input_artifacts)
-        target_artifact    = await store.get(node.output_artifacts[0])
+        partial_artifacts = await store.get_many(node.input_artifacts)
+        target_artifact   = await store.get(node.output_artifacts[0])
 
         response = await self._synth_agent.arun(
             target_artifact=target_artifact,
@@ -131,16 +158,17 @@ class AgentRunner:
         Build the user message for a domain agent.
 
         Includes:
-        - The node's task (derived from output artifact descriptions)
         - All input artifact bodies as context
-        - Expected output artifact names and descriptions
+        - Expected output artifact names
+        - MCP server path and tool descriptions if available
+        - Instructions for using MCP tools
         """
-        payload = {
+        payload: dict = {
             "input_artifacts": [
                 {
-                    "name": artifact.name,
+                    "name":        artifact.name,
                     "description": artifact.description,
-                    "body": artifact.body,
+                    "body":        artifact.body,
                 }
                 for artifact in input_artifacts
             ],
@@ -152,4 +180,20 @@ class AgentRunner:
                 "inside the 'outputs' field."
             ),
         }
+
+        # ── Inject MCP tool context if available ──────────────────────────────
+        if node.mcp_server_path and node.query_tool:
+            payload["mcp_tools"] = {
+                "server_path": node.mcp_server_path,
+                "available_tools": [
+                    tq.tool_description for tq in node.query_tool
+                ],
+                "instructions": (
+                    "A ToolStorePy MCP server has been built for you and is available "
+                    "at the path above. It contains real implementations of the tools "
+                    "listed in 'available_tools'. Use these tools to complete your task "
+                    "rather than relying on simulated outputs."
+                ),
+            }
+
         return json.dumps(payload, indent=2)
