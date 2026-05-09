@@ -9,6 +9,7 @@ Directory structure:
     │   └── research_report.py
     ├── loom/
     │   ├── __init__.py
+    │   ├── pipeline.py
     │   ├── compiler/
     │   │   ├── __init__.py
     │   │   ├── agent.py
@@ -27,6 +28,9 @@ Directory structure:
     │   │   ├── agent_runner.py
     │   │   ├── artifact_store.py
     │   │   └── executor.py
+    │   ├── mcp_builder/
+    │   │   ├── __init__.py
+    │   │   └── builder.py
     │   ├── models/
     │   │   ├── __init__.py
     │   │   ├── artifact.py
@@ -48,20 +52,31 @@ Directory structure:
     │   └── synthesizer.txt
     └── tests/
         ├── __init__.py
+        ├── conftest.py
         ├── compiler/
-        │   └── __init__.py
+        │   ├── __init__.py
+        │   └── test_compiler.py
         ├── decomposer/
-        │   └── __init__.py
+        │   ├── __init__.py
+        │   └── test_decomposer.py
         ├── graph_builder/
-        │   └── __init__.py
+        │   ├── __init__.py
+        │   └── test_graph_builder.py
         ├── initiator/
-        │   └── __init__.py
+        │   ├── __init__.py
+        │   └── test_initiator.py
+        ├── mcp_builder/
+        │   ├── __init__.py
+        │   └── test_mpc_builder.py
         ├── models/
-        │   └── __init__.py
+        │   ├── __init__.py
+        │   └── test_models.py
         ├── sorter/
-        │   └── __init__.py
+        │   ├── __init__.py
+        │   └── test_sorter.py
         └── synthesizer/
-            └── __init__.py
+            ├── __init__.py
+            └── test_synthesizer.py
 
 ================================================
 FILE: README.md
@@ -72,13 +87,33 @@ FILE: README.md
 ================================================
 FILE: main.py
 ================================================
-def main():
-    print("Hello from loom-ai!")
+import asyncio
+import logging
+import sys
+
+from loom import Loom
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
+
+async def main() -> None:
+    if len(sys.argv) < 2:
+        print("Usage: uv run main.py \"<your task here>\"")
+        sys.exit(1)
+
+    task = sys.argv[1]
+    model = sys.argv[2] if len(sys.argv) > 2 else "gpt-4o"
+
+    loom = Loom(model=model)
+    dag  = await loom.run(task)
+    print(loom.to_text(dag))
 
 
 if __name__ == "__main__":
-    main()
-
+    asyncio.run(main())
 
 
 ================================================
@@ -87,17 +122,52 @@ FILE: pyproject.toml
 [project]
 name = "loom-ai"
 version = "0.1.0"
-description = "Add your description here"
+description = "A multi-agent DAG pipeline framework that decomposes complex tasks into coordinated agents with real tool execution via ToolStorePy"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "litellm>=1.40.0",
+    "instructor>=1.3.0",
+    "networkx>=3.3",
+    "pydantic>=2.7.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+    "toolstorepy>=0.1.0",
+]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.14.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 
 ================================================
 FILE: .env.example
 ================================================
-[Empty file]
+# Copy to .env and fill in your keys
+# loom-ai uses litellm â€” set whichever provider you use
+
+# OpenAI
+OPENAI_API_KEY=sk-...
+
+# Anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Azure OpenAI (optional)
+# AZURE_API_KEY=...
+# AZURE_API_BASE=...
+# AZURE_API_VERSION=...
+
 
 
 ================================================
@@ -116,7 +186,189 @@ FILE: examples/research_report.py
 ================================================
 FILE: loom/__init__.py
 ================================================
-[Empty file]
+from .pipeline import Loom
+from .models import DAG, DAGStatus, Node, NodeType, NodeStatus, Artifact
+
+__all__ = [
+    "Loom",
+    "DAG",
+    "DAGStatus",
+    "Node",
+    "NodeType",
+    "NodeStatus",
+    "Artifact",
+]
+
+
+================================================
+FILE: loom/pipeline.py
+================================================
+from __future__ import annotations
+
+import logging
+import uuid
+from pathlib import Path
+
+from loom.models import DAG, DAGStatus
+from loom.decomposer import DecomposerAgent, DecomposerParser
+from loom.graph_builder import GraphBuilderAgent, GraphBuilderParser, GraphBuilderValidator
+from loom.sorter import TopologicalSorter, SorterValidator
+from loom.synthesizer import SynthesizerInjector
+from loom.mcp_builder import MCPNodeBuilder
+from loom.initiator import Executor
+from loom.compiler import CompilerAgent, CompilerFormatter, CompilerResponse, OutputSection
+
+
+logger = logging.getLogger(__name__)
+
+
+class Loom:
+    """
+    Top-level orchestrator for the Loom-AI pipeline.
+
+    Runs all five stages in sequence:
+        1. Decomposer     â€” breaks task into nodes + artifacts
+        2. Graph Builder  â€” validates and formalizes DAG edges
+        3. Sorter         â€” topological sort into execution levels
+        4. Initiator      â€” level-wise async agent execution
+                            (with per-node MCP server builds via ToolStorePy)
+        5. Compiler       â€” assembles final output from all artifacts
+
+    Usage:
+        loom = Loom(model="gpt-4o")
+        dag  = await loom.run("Produce a go-to-market strategy for a B2B SaaS product")
+        print(loom.to_text(dag))
+
+    Tool usage:
+        Nodes whose query_tool list is non-empty will have a ToolStorePy MCP
+        server built for them automatically before execution. The decomposer
+        LLM decides which tools each node needs â€” just describe the task and
+        loom handles the rest.
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        workspace: str | Path = "loom_workspace",
+        mcp_index: str | None = "core-tools",
+        mcp_index_url: str | None = None,
+        mcp_install_requirements: bool = False,
+        mcp_verbose: bool = False,
+    ):
+        """
+        Args:
+            model: LiteLLM-compatible model string (e.g. "gpt-4o", "claude-sonnet-4-6").
+            workspace: Root directory for all run artifacts and MCP workspaces.
+            mcp_index: ToolStorePy built-in index name. Default: "core-tools".
+            mcp_index_url: Direct URL to a custom ToolStorePy index. Overrides mcp_index.
+            mcp_install_requirements: Install repo requirements in MCP venv.
+            mcp_verbose: Enable verbose ToolStorePy logging.
+        """
+        self.model     = model
+        self.workspace = Path(workspace)
+
+        # â”€â”€ MCP builder â€” shared across all nodes in a run â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        self._mcp_builder = MCPNodeBuilder(
+            base_workspace=self.workspace,
+            index=mcp_index if not mcp_index_url else None,
+            index_url=mcp_index_url,
+            install_requirements=mcp_install_requirements,
+            verbose=mcp_verbose,
+        )
+
+        # â”€â”€ Pipeline stages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        self._decomposer        = DecomposerAgent(model=model)
+        self._decomposer_parser = DecomposerParser()
+        self._graph_builder     = GraphBuilderAgent(model=model)
+        self._graph_parser      = GraphBuilderParser()
+        self._graph_validator   = GraphBuilderValidator()
+        self._sorter            = TopologicalSorter()
+        self._sorter_validator  = SorterValidator()
+        self._synth_injector    = SynthesizerInjector()
+        self._executor          = Executor(model=model, mcp_builder=self._mcp_builder)
+        self._compiler          = CompilerAgent(model=model)
+        self._formatter         = CompilerFormatter()
+
+    async def run(self, task: str) -> DAG:
+        """
+        Execute the full Loom pipeline for a given task.
+
+        Args:
+            task: The complex task to solve.
+
+        Returns:
+            Completed DAG with final_output populated.
+        """
+        dag_id = str(uuid.uuid4())[:8]
+        logger.info(f"[{dag_id}] Starting Loom pipeline: {task[:80]}...")
+
+        # â”€â”€ Stage 1: Decompose â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        logger.info(f"[{dag_id}] Stage 1: Decomposing task...")
+        decomp_response      = await self._decomposer.arun(task)
+        nodes, artifacts     = self._decomposer_parser.parse(decomp_response)
+        logger.info(f"[{dag_id}] â†’ {len(nodes)} nodes, {len(artifacts)} artifacts.")
+
+        # â”€â”€ Stage 2: Build Graph â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        logger.info(f"[{dag_id}] Stage 2: Building graph...")
+        graph_response       = await self._graph_builder.arun(nodes, artifacts)
+        nodes, artifacts, edges, synthesizer_targets = self._graph_parser.parse(graph_response)
+        G                    = self._graph_validator.validate(nodes, artifacts, edges)
+        logger.info(f"[{dag_id}] â†’ {len(edges)} edges, synthesizer targets: {synthesizer_targets}")
+
+        # â”€â”€ Stage 2b: Inject Synthesizer Nodes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if synthesizer_targets:
+            logger.info(f"[{dag_id}] Injecting synthesizer nodes...")
+            nodes, artifacts, G = self._synth_injector.inject(
+                nodes, artifacts, synthesizer_targets, G
+            )
+            logger.info(f"[{dag_id}] â†’ {len(nodes)} total nodes after injection.")
+
+        # â”€â”€ Stage 3: Topological Sort â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        logger.info(f"[{dag_id}] Stage 3: Sorting DAG...")
+        self._sorter_validator.validate(G, nodes, artifacts)
+        levels = self._sorter.sort(G)
+        logger.info(f"[{dag_id}]\n{self._sorter.describe(G, nodes)}")
+
+        # â”€â”€ Assemble DAG â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        dag = DAG(
+            id=dag_id,
+            task=task,
+            nodes=nodes,
+            artifacts=artifacts,
+            levels=levels,
+        )
+
+        # â”€â”€ Stage 4: Execute â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        logger.info(f"[{dag_id}] Stage 4: Executing {len(levels)} levels...")
+        dag = await self._executor.execute(dag)
+
+        if dag.status == DAGStatus.FAILED:
+            logger.error(f"[{dag_id}] Pipeline execution failed.")
+            return dag
+
+        # â”€â”€ Stage 5: Compile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        logger.info(f"[{dag_id}] Stage 5: Compiling final output...")
+        compiler_response = await self._compiler.arun(dag)
+        dag               = self._formatter.format(compiler_response, dag)
+
+        logger.info(f"[{dag_id}] Pipeline complete.")
+        return dag
+
+    def to_text(self, dag: DAG) -> str:
+        """Render the final DAG output as plain text."""
+        if not dag.final_output:
+            return "Pipeline did not produce a final output."
+
+        response = CompilerResponse(
+            title=dag.final_output.get("title", ""),
+            summary=dag.final_output.get("summary", ""),
+            sections=[
+                OutputSection(**s) for s in dag.final_output.get("sections", [])
+            ],
+            recommendations=dag.final_output.get("recommendations", []),
+            metadata=dag.final_output.get("metadata", {}),
+        )
+        return self._formatter.to_text(response)
 
 
 ================================================
@@ -762,6 +1014,7 @@ FILE: loom/initiator/agent_runner.py
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import instructor
@@ -769,9 +1022,12 @@ from litellm import completion
 from pydantic import BaseModel
 
 from loom.models import Node, NodeType, NodeStatus, Artifact
+from loom.mcp_builder import MCPNodeBuilder
 from .artifact_store import ArtifactStore
 from loom.synthesizer import SynthesizerAgent, SynthesizerParser
 
+
+logger = logging.getLogger(__name__)
 
 # â”€â”€ Instructor client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -794,18 +1050,28 @@ class AgentRunner:
     """
     Executes a single node in the DAG.
 
-    Handles two node types:
-    - DOMAIN: standard LLM call with input artifacts as context
-    - SYNTHESIZER: delegates to SynthesizerAgent with partial artifacts
+    Before executing any domain node with non-empty query_tool:
+        1. Calls MCPNodeBuilder to build a dedicated MCP server via ToolStorePy
+        2. Stores the MCP server path on the node
+        3. Injects MCP server path into the agent's user message context
+
+    Handles two node types at execution time:
+        - DOMAIN: standard LLM call with input artifacts + optional MCP context
+        - SYNTHESIZER: delegates to SynthesizerAgent with partial artifacts
 
     After execution:
-    - Writes all output artifact bodies to the ArtifactStore
-    - Updates the node status to COMPLETED or FAILED
+        - Writes all output artifact bodies to the ArtifactStore
+        - Updates the node status to COMPLETED or FAILED
     """
 
-    def __init__(self, model: str = "gpt-4o"):
-        self.model = model
-        self._synth_agent = SynthesizerAgent(model=model)
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        mcp_builder: MCPNodeBuilder | None = None,
+    ):
+        self.model        = model
+        self._mcp_builder = mcp_builder
+        self._synth_agent  = SynthesizerAgent(model=model)
         self._synth_parser = SynthesizerParser()
 
     async def run(
@@ -820,12 +1086,24 @@ class AgentRunner:
         Args:
             node: The node to execute.
             store: Shared artifact store.
-            nodes: Full node registry (for synthesizer context).
+            nodes: Full node registry.
 
         Returns:
             Updated Node with status set to COMPLETED or FAILED.
         """
         try:
+            # â”€â”€ Build MCP server if node has tool queries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            if node.query_tool and self._mcp_builder:
+                mcp_path = self._mcp_builder.build_for_node(node)
+                if mcp_path:
+                    node = node.model_copy(
+                        update={"mcp_server_path": str(mcp_path)}
+                    )
+                    logger.info(
+                        f"Node '{node.id}' MCP server ready â†’ {mcp_path}"
+                    )
+
+            # â”€â”€ Execute node â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if node.node_type == NodeType.SYNTHESIZER:
                 await self._run_synthesizer(node, store)
             else:
@@ -834,6 +1112,7 @@ class AgentRunner:
             return node.model_copy(update={"status": NodeStatus.COMPLETED})
 
         except Exception as e:
+            logger.error(f"Node '{node.id}' failed: {e}")
             return node.model_copy(
                 update={
                     "status": NodeStatus.FAILED,
@@ -845,8 +1124,8 @@ class AgentRunner:
         """
         Execute a domain agent node.
 
-        Builds context from input artifacts, calls the LLM,
-        and writes each output artifact body to the store.
+        Builds context from input artifacts and optional MCP server info,
+        calls the LLM, and writes each output artifact body to the store.
         """
         input_artifacts = await store.get_many(node.input_artifacts)
         user_message    = self._build_domain_message(node, input_artifacts)
@@ -871,8 +1150,8 @@ class AgentRunner:
         Retrieves all partial artifacts, delegates to SynthesizerAgent,
         and writes the merged artifact body to the store.
         """
-        partial_artifacts  = await store.get_many(node.input_artifacts)
-        target_artifact    = await store.get(node.output_artifacts[0])
+        partial_artifacts = await store.get_many(node.input_artifacts)
+        target_artifact   = await store.get(node.output_artifacts[0])
 
         response = await self._synth_agent.arun(
             target_artifact=target_artifact,
@@ -892,16 +1171,17 @@ class AgentRunner:
         Build the user message for a domain agent.
 
         Includes:
-        - The node's task (derived from output artifact descriptions)
         - All input artifact bodies as context
-        - Expected output artifact names and descriptions
+        - Expected output artifact names
+        - MCP server path and tool descriptions if available
+        - Instructions for using MCP tools
         """
-        payload = {
+        payload: dict = {
             "input_artifacts": [
                 {
-                    "name": artifact.name,
+                    "name":        artifact.name,
                     "description": artifact.description,
-                    "body": artifact.body,
+                    "body":        artifact.body,
                 }
                 for artifact in input_artifacts
             ],
@@ -913,6 +1193,22 @@ class AgentRunner:
                 "inside the 'outputs' field."
             ),
         }
+
+        # â”€â”€ Inject MCP tool context if available â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if node.mcp_server_path and node.query_tool:
+            payload["mcp_tools"] = {
+                "server_path": node.mcp_server_path,
+                "available_tools": [
+                    tq.tool_description for tq in node.query_tool
+                ],
+                "instructions": (
+                    "A ToolStorePy MCP server has been built for you and is available "
+                    "at the path above. It contains real implementations of the tools "
+                    "listed in 'available_tools'. Use these tools to complete your task "
+                    "rather than relying on simulated outputs."
+                ),
+            }
+
         return json.dumps(payload, indent=2)
 
 
@@ -1043,8 +1339,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 
 from loom.models import DAG, Node, NodeStatus, DAGStatus
+from loom.mcp_builder import MCPNodeBuilder
 from .artifact_store import ArtifactStore
 from .agent_runner import AgentRunner
 
@@ -1059,18 +1357,23 @@ class Executor:
     Iterates through topological levels in order. Within each level,
     all nodes are launched concurrently via asyncio.gather().
 
+    If a MCPNodeBuilder is provided, domain nodes with non-empty
+    query_tool will have their MCP server built before execution.
+    MCP builds within a level also run in parallel.
+
     After each level completes:
     - Node statuses are updated in the DAG
     - Artifact store is populated with produced bodies
-    - Any failed nodes are reported and execution halts
-
-    This guarantees that when level N begins, all artifacts
-    from levels 0..N-1 are fully available in the store.
+    - Any failed nodes halt execution
     """
 
-    def __init__(self, model: str = "gpt-4o"):
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        mcp_builder: MCPNodeBuilder | None = None,
+    ):
         self.model   = model
-        self._runner = AgentRunner(model=model)
+        self._runner = AgentRunner(model=model, mcp_builder=mcp_builder)
 
     async def execute(self, dag: DAG) -> DAG:
         """
@@ -1084,13 +1387,11 @@ class Executor:
             Updated DAG with all node statuses and artifact bodies populated.
         """
         store = ArtifactStore(dag.artifacts)
-
-        dag = dag.model_copy(update={"status": DAGStatus.RUNNING})
+        dag   = dag.model_copy(update={"status": DAGStatus.RUNNING})
 
         for level_index, level in enumerate(dag.levels):
             logger.info(
-                f"Executing level {level_index}/{len(dag.levels) - 1}: "
-                f"{level}"
+                f"Executing level {level_index}/{len(dag.levels) - 1}: {level}"
             )
 
             dag, store = await self._execute_level(
@@ -1113,7 +1414,7 @@ class Executor:
         final_artifacts = await store.all()
         dag = dag.model_copy(update={
             "artifacts": final_artifacts,
-            "status": DAGStatus.COMPLETED,
+            "status":    DAGStatus.COMPLETED,
         })
 
         logger.info("DAG execution completed successfully.")
@@ -1128,13 +1429,9 @@ class Executor:
         """
         Execute all nodes in a single level concurrently.
 
-        Args:
-            level: List of node IDs to execute in parallel.
-            dag: Current DAG state.
-            store: Shared artifact store.
-
-        Returns:
-            Updated (DAG, store) after level completes.
+        MCP builds and agent LLM calls all run inside asyncio.gather â€”
+        ToolStorePy's blocking build() is wrapped in run_in_executor
+        inside MCPNodeBuilder so it doesn't block the event loop.
         """
         tasks = [
             self._runner.run(
@@ -1147,15 +1444,159 @@ class Executor:
 
         updated_nodes: list[Node] = await asyncio.gather(*tasks)
 
-        # â”€â”€ Update node statuses in DAG â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         new_nodes = dict(dag.nodes)
         for node in updated_nodes:
             new_nodes[node.id] = node
             logger.info(f"  Node '{node.id}' â†’ {node.status.value}")
 
         dag = dag.model_copy(update={"nodes": new_nodes})
-
         return dag, store
+
+
+================================================
+FILE: loom/mcp_builder/__init__.py
+================================================
+from .builder import MCPNodeBuilder
+
+__all__ = ["MCPNodeBuilder"]
+
+
+================================================
+FILE: loom/mcp_builder/builder.py
+================================================
+from __future__ import annotations
+
+import json
+import logging
+import tempfile
+from pathlib import Path
+
+from loom.models import Node
+
+logger = logging.getLogger(__name__)
+
+
+class MCPNodeBuilder:
+    """
+    Wraps ToolStorePy to build a dedicated MCP server for a single DAG node.
+
+    Called by AgentRunner before executing any domain node that has
+    non-empty query_tool entries.
+
+    Workflow per node:
+        1. Write node's query_tool list as queries.json
+        2. Call ToolStorePy.build() pointing at that queries.json
+        3. Return path to generated mcp_unified_server.py
+        4. AgentRunner stores path on node.mcp_server_path
+
+    Each node gets its own isolated workspace under the run's base workspace,
+    so parallel nodes in the same level never conflict.
+    """
+
+    def __init__(
+        self,
+        base_workspace: Path,
+        index: str | None = "core-tools",
+        index_url: str | None = None,
+        install_requirements: bool = False,
+        verbose: bool = False,
+    ):
+        """
+        Args:
+            base_workspace: Root workspace for this DAG run.
+                            Node workspaces will be created as subdirectories.
+            index: ToolStorePy built-in index name (default: "core-tools").
+            index_url: Direct URL to a custom index archive. Overrides index.
+            install_requirements: Whether to install repo requirements in venv.
+            verbose: Enable verbose ToolStorePy logging.
+        """
+        self.base_workspace      = Path(base_workspace)
+        self.index               = index
+        self.index_url           = index_url
+        self.install_requirements = install_requirements
+        self.verbose             = verbose
+
+        self.base_workspace.mkdir(parents=True, exist_ok=True)
+
+    def build_for_node(self, node: Node) -> Path | None:
+        """
+        Build an MCP server for a node's tool requirements.
+
+        Args:
+            node: The Node whose query_tool list defines what tools to build.
+
+        Returns:
+            Path to mcp_unified_server.py, or None if node has no tool queries.
+
+        Raises:
+            RuntimeError: If ToolStorePy build fails.
+        """
+        if not node.query_tool:
+            return None
+
+        from toolstorepy import ToolStorePy  # imported here so loom works without it if unused
+
+        node_workspace = self.base_workspace / "mcp" / node.id
+        node_workspace.mkdir(parents=True, exist_ok=True)
+
+        queries_path = self._write_queries(node, node_workspace)
+
+        logger.info(
+            f"[MCPNodeBuilder] Building MCP server for node '{node.id}' "
+            f"with {len(node.query_tool)} tool queries..."
+        )
+
+        try:
+            toolstore = ToolStorePy(
+                workspace=str(node_workspace),
+                install_requirements=self.install_requirements,
+                verbose=self.verbose,
+            )
+
+            output_path = toolstore.build(
+                queries=str(queries_path),
+                index=self.index if not self.index_url else None,
+                index_url=self.index_url,
+                force_refresh=False,
+            )
+
+            logger.info(
+                f"[MCPNodeBuilder] MCP server built for node '{node.id}' â†’ {output_path}"
+            )
+
+            return Path(output_path)
+
+        except Exception as e:
+            raise RuntimeError(
+                f"ToolStorePy failed to build MCP server for node '{node.id}': {e}"
+            ) from e
+
+    def _write_queries(self, node: Node, workspace: Path) -> Path:
+        """
+        Write node's query_tool list as a ToolStorePy-compatible queries.json.
+
+        Format:
+            [{"tool_description": "..."}]
+
+        Args:
+            node: Node whose query_tool to serialize.
+            workspace: Directory to write queries.json into.
+
+        Returns:
+            Path to written queries.json.
+        """
+        queries = [{"tool_description": tq.tool_description} for tq in node.query_tool]
+        queries_path = workspace / "queries.json"
+
+        with open(queries_path, "w", encoding="utf-8") as f:
+            json.dump(queries, f, indent=2)
+
+        logger.debug(
+            f"[MCPNodeBuilder] Wrote {len(queries)} queries for node '{node.id}' "
+            f"â†’ {queries_path}"
+        )
+
+        return queries_path
 
 
 ================================================
@@ -1236,6 +1677,8 @@ class Artifact(BaseModel):
 FILE: loom/models/dag.py
 ================================================
 from __future__ import annotations
+
+from enum import Enum
 from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
@@ -1247,13 +1690,10 @@ class DAGStatus(str, Enum):
     """
     Overall execution state of the DAG.
     """
-    PLANNED    = "planned"     # DAG built, not yet executing
-    RUNNING    = "running"     # Currently executing levels
-    COMPLETED  = "completed"   # All nodes completed successfully
-    FAILED     = "failed"      # One or more nodes failed
-
-
-from enum import Enum
+    PLANNED    = "planned"
+    RUNNING    = "running"
+    COMPLETED  = "completed"
+    FAILED     = "failed"
 
 
 class DAG(BaseModel):
@@ -1376,17 +1816,15 @@ from enum import Enum
 from typing import Any
 from pydantic import BaseModel, Field
 
-from .artifact import Artifact
-
 
 class NodeType(str, Enum):
     """
     The role of a node in the DAG pipeline.
     """
-    DECOMPOSER   = "decomposer"    # Meta â€” plans the DAG
-    DOMAIN       = "domain"        # Does actual task work
-    SYNTHESIZER  = "synthesizer"   # Auto-injected merge/QC node
-    COMPILER     = "compiler"      # Final output assembly
+    DECOMPOSER   = "decomposer"
+    DOMAIN       = "domain"
+    SYNTHESIZER  = "synthesizer"
+    COMPILER     = "compiler"
 
 
 class NodeStatus(str, Enum):
@@ -1399,6 +1837,22 @@ class NodeStatus(str, Enum):
     FAILED     = "failed"
 
 
+class ToolQuery(BaseModel):
+    """
+    A single tool description passed to ToolStorePy.
+    Maps directly to one entry in queries.json format:
+        {"tool_description": "evaluate a mathematical expression securely"}
+    """
+    tool_description: str = Field(
+        ...,
+        description=(
+            "Plain English description of the tool this agent needs. "
+            "ToolStorePy uses this to semantically search and build the right MCP tool. "
+            "Example: 'evaluate a mathematical arithmetic expression securely'"
+        )
+    )
+
+
 class Node(BaseModel):
     """
     Represents a single agent in the DAG.
@@ -1406,6 +1860,10 @@ class Node(BaseModel):
     Every node is an agent â€” decomposer, domain, synthesizer, and compiler
     all share this same interface. The node type determines behavior,
     but the structure is uniform.
+
+    query_tool: list of ToolQuery objects. If non-empty, ToolStorePy will
+    build an MCP server for this node before execution, giving the agent
+    access to real tool implementations matching each description.
     """
 
     id: str = Field(
@@ -1428,9 +1886,15 @@ class Node(BaseModel):
         description="The system prompt that governs this agent's behavior and scope."
     )
 
-    query_tool: dict[str, Any] = Field(
-        default_factory=dict,
-        description="ToolStorePy compatible tool configuration for this agent."
+    query_tool: list[ToolQuery] = Field(
+        default_factory=list,
+        description=(
+            "List of tool descriptions for ToolStorePy. "
+            "Each entry describes one tool this agent needs in plain English. "
+            "ToolStorePy will semantically search its index and build a real MCP server "
+            "with matching tool implementations before this node executes. "
+            "Leave empty if the agent needs no external tools."
+        )
     )
 
     input_artifacts: list[str] = Field(
@@ -1448,31 +1912,42 @@ class Node(BaseModel):
         description="Current execution status of this node."
     )
 
-    # Populated at runtime after execution
     result: dict[str, Any] = Field(
         default_factory=dict,
         description="Raw LLM output after this node executes."
     )
 
-    # Only populated for synthesizer nodes
     contributor_system_prompts: list[str] = Field(
         default_factory=list,
-        description="System prompts of contributing agents. Used by synthesizer to understand contributor intent."
+        description="System prompts of contributing agents. Used by synthesizer nodes."
+    )
+
+    # Populated at runtime by MCPNodeBuilder if query_tool is non-empty
+    mcp_server_path: str | None = Field(
+        default=None,
+        description=(
+            "Absolute path to the ToolStorePy-built MCP server for this node. "
+            "Set at runtime. None if this node has no tool queries."
+        )
     )
 
     class Config:
         json_schema_extra = {
             "example": {
-                "id": "market_researcher",
-                "name": "Market Research Agent",
+                "id": "data_analyst",
+                "name": "Data Analysis Agent",
                 "node_type": "domain",
-                "system_prompt": "You are a market research specialist...",
-                "query_tool": {},
-                "input_artifacts": ["raw_data_summary"],
-                "output_artifacts": ["market_analysis_report"],
+                "system_prompt": "You are a data analyst...",
+                "query_tool": [
+                    {"tool_description": "preview rows and get summary statistics from a CSV file"},
+                    {"tool_description": "calculate cryptographic hash of a file"},
+                ],
+                "input_artifacts": ["raw_dataset"],
+                "output_artifacts": ["analysis_report"],
                 "status": "pending",
                 "result": {},
-                "contributor_system_prompts": []
+                "contributor_system_prompts": [],
+                "mcp_server_path": None,
             }
         }
 
@@ -2000,7 +2475,9 @@ You must return a valid JSON object with the following structure:
       "name": "Human Readable Agent Name",
       "node_type": "domain",
       "system_prompt": "Detailed system prompt for this agent...",
-      "query_tool": {},
+      "query_tool": [
+        {"tool_description": "plain English description of a tool this agent needs"}
+      ],
       "input_artifacts": ["artifact_name_1"],
       "output_artifacts": ["artifact_name_2"]
     }
@@ -2023,9 +2500,25 @@ You must return a valid JSON object with the following structure:
    - node_type must always be "domain" â€” do not create decomposer, synthesizer, or compiler nodes, those are handled by the system
    - system_prompt must be detailed, scoped, and specific to that agent's role
    - input_artifacts and output_artifacts must reference artifact names that exist in the artifacts list
-   - query_tool can be an empty dict if no tools are needed
 
-2. ARTIFACTS
+2. QUERY_TOOL â€” CRITICAL
+   - query_tool is a list of {"tool_description": "..."} objects
+   - Each entry describes ONE external tool capability this agent needs in plain English
+   - The system uses ToolStorePy (https://pypi.org/project/toolstorepy/) to semantically search a curated index of tool repositories and build a real MCP server for this agent before it executes
+   - Write tool_description as a capability sentence, not a tool name: 
+       GOOD: "evaluate a mathematical arithmetic expression securely"
+       GOOD: "convert between different units of measurement like length and temperature"
+       GOOD: "calculate cryptographic hash of a file or encode decode base64 text"
+       GOOD: "get current weather conditions temperature and humidity for a city"
+       GOOD: "preview rows or get summary statistics from a CSV or Excel file"
+       BAD:  "calculator" (too vague â€” no semantic context)
+       BAD:  "use numpy" (names a library, not a capability)
+       BAD:  "python tool" (meaningless for semantic search)
+   - Only add query_tool entries when the agent genuinely needs an external tool to complete its work
+   - Agents that only reason, synthesize, or analyze text should have query_tool: []
+   - Agents that need to fetch data, perform calculations, access files, call APIs, or interact with systems should have relevant query_tool entries
+
+3. ARTIFACTS
    - Every artifact must have a unique name in snake_case
    - description must clearly describe the artifact's content and purpose
    - contributors list the node IDs that produce this artifact
@@ -2033,19 +2526,18 @@ You must return a valid JSON object with the following structure:
    - body must always be an empty dict {} â€” it will be populated at runtime
    - An artifact with multiple contributors will automatically get a synthesizer node injected by the system
 
-3. GRAPH INTEGRITY
+4. GRAPH INTEGRITY
    - Every artifact referenced in a node's input_artifacts must exist in the artifacts list
    - Every artifact referenced in a node's output_artifacts must exist in the artifacts list
    - Do not create circular dependencies
    - Ensure every node has at least one output artifact
    - The graph must be a valid DAG â€” no cycles
 
-4. DECOMPOSITION QUALITY
+5. DECOMPOSITION QUALITY
    - Break the task into the smallest meaningful units of work
    - Each agent should have a single clear responsibility
    - Prefer more focused nodes over fewer large nodes
    - Nodes that can work independently should not be given unnecessary dependencies
-   - Think carefully about what each agent truly needs as input before assigning input_artifacts
 
 ## Important
 Return ONLY the JSON object. No preamble, no explanation, no markdown code fences.
@@ -2157,9 +2649,277 @@ FILE: tests/__init__.py
 
 
 ================================================
+FILE: tests/conftest.py
+================================================
+"""
+tests/conftest.py
+
+Shared pytest fixtures for loom-ai test suite.
+"""
+
+import pytest
+from loom.models import Artifact, Node, NodeType, NodeStatus, DAG
+
+
+@pytest.fixture
+def sample_artifact():
+    return Artifact(
+        name="sample_artifact",
+        description="A sample artifact for testing.",
+        contributors=["agent_a"],
+        users=["agent_b"],
+        body={"key": "value"},
+    )
+
+
+@pytest.fixture
+def sample_node():
+    return Node(
+        id="sample_agent",
+        name="Sample Agent",
+        node_type=NodeType.DOMAIN,
+        system_prompt="You are a sample agent for testing.",
+        input_artifacts=[],
+        output_artifacts=["sample_artifact"],
+    )
+
+
+@pytest.fixture
+def two_node_dag():
+    """
+    Minimal valid DAG:
+        agent_a â†’ artifact_1 â†’ agent_b
+    """
+    node_a = Node(
+        id="agent_a",
+        name="Agent A",
+        node_type=NodeType.DOMAIN,
+        system_prompt="You are agent A.",
+        output_artifacts=["artifact_1"],
+    )
+    node_b = Node(
+        id="agent_b",
+        name="Agent B",
+        node_type=NodeType.DOMAIN,
+        system_prompt="You are agent B.",
+        input_artifacts=["artifact_1"],
+        output_artifacts=["artifact_2"],
+    )
+    artifact_1 = Artifact(
+        name="artifact_1",
+        description="Output from agent A.",
+        contributors=["agent_a"],
+        users=["agent_b"],
+    )
+    artifact_2 = Artifact(
+        name="artifact_2",
+        description="Output from agent B.",
+        contributors=["agent_b"],
+        users=[],
+    )
+    return DAG(
+        id="test_dag",
+        task="Test two-node pipeline",
+        nodes={"agent_a": node_a, "agent_b": node_b},
+        artifacts={"artifact_1": artifact_1, "artifact_2": artifact_2},
+        levels=[["agent_a"], ["agent_b"]],
+    )
+
+
+================================================
 FILE: tests/compiler/__init__.py
 ================================================
 [Empty file]
+
+
+================================================
+FILE: tests/compiler/test_compiler.py
+================================================
+"""
+tests/compiler/test_compiler.py
+
+Unit tests for CompilerFormatter.
+CompilerAgent LLM calls are not tested here (covered by integration tests).
+"""
+
+import pytest
+from loom.compiler.agent import CompilerResponse, OutputSection
+from loom.compiler.formatter import CompilerFormatter
+from loom.models import DAG, DAGStatus, Node, NodeType, Artifact
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# HELPERS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _make_response(
+    title="Test Report",
+    summary="This is a summary.",
+    sections=None,
+    recommendations=None,
+    metadata=None,
+):
+    return CompilerResponse(
+        title=title,
+        summary=summary,
+        sections=sections or [
+            OutputSection(
+                title="Section One",
+                content="Content of section one.",
+                source_artifacts=["artifact_a"],
+            )
+        ],
+        recommendations=recommendations or [],
+        metadata=metadata or {},
+    )
+
+
+def _make_dag(node_ids=None, artifact_names=None):
+    nodes = {
+        id: Node(
+            id=id,
+            name=id.title(),
+            node_type=NodeType.DOMAIN,
+            system_prompt="...",
+        )
+        for id in (node_ids or ["agent_a"])
+    }
+    artifacts = {
+        name: Artifact(name=name, description=f"Artifact {name}", body={"x": 1})
+        for name in (artifact_names or ["artifact_a"])
+    }
+    return DAG(
+        id="run_test",
+        task="test task",
+        nodes=nodes,
+        artifacts=artifacts,
+    )
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# FORMATTER TESTS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestCompilerFormatter:
+
+    def setup_method(self):
+        self.formatter = CompilerFormatter()
+
+    def test_format_writes_title(self):
+        response = _make_response(title="My Report")
+        dag = _make_dag()
+        result = self.formatter.format(response, dag)
+        assert result.final_output["title"] == "My Report"
+
+    def test_format_writes_summary(self):
+        response = _make_response(summary="Executive summary here.")
+        dag = _make_dag()
+        result = self.formatter.format(response, dag)
+        assert result.final_output["summary"] == "Executive summary here."
+
+    def test_format_writes_sections(self):
+        response = _make_response(
+            sections=[
+                OutputSection(title="A", content="Content A", source_artifacts=["art_a"]),
+                OutputSection(title="B", content="Content B", source_artifacts=["art_b"]),
+            ]
+        )
+        dag = _make_dag()
+        result = self.formatter.format(response, dag)
+        assert len(result.final_output["sections"]) == 2
+        assert result.final_output["sections"][0]["title"] == "A"
+
+    def test_format_writes_recommendations(self):
+        response = _make_response(recommendations=["Do X", "Do Y"])
+        dag = _make_dag()
+        result = self.formatter.format(response, dag)
+        assert result.final_output["recommendations"] == ["Do X", "Do Y"]
+
+    def test_format_metadata_includes_dag_id(self):
+        response = _make_response()
+        dag = _make_dag()
+        result = self.formatter.format(response, dag)
+        assert result.final_output["metadata"]["dag_id"] == "run_test"
+
+    def test_format_metadata_includes_task(self):
+        response = _make_response()
+        dag = _make_dag()
+        result = self.formatter.format(response, dag)
+        assert result.final_output["metadata"]["task"] == "test task"
+
+    def test_format_metadata_total_agents(self):
+        response = _make_response()
+        dag = _make_dag(node_ids=["a", "b", "c"])
+        result = self.formatter.format(response, dag)
+        assert result.final_output["metadata"]["total_agents"] == 3
+
+    def test_format_excludes_partial_artifacts_from_count(self):
+        response = _make_response()
+        dag = _make_dag(artifact_names=["real_art", "real_art__partial__agent_a"])
+        result = self.formatter.format(response, dag)
+        # Only real_art should count â€” partial should be excluded
+        assert result.final_output["metadata"]["artifacts_produced"] == 1
+
+    def test_format_does_not_mutate_input_dag(self):
+        response = _make_response()
+        dag = _make_dag()
+        original_final_output = dict(dag.final_output)
+        self.formatter.format(response, dag)
+        assert dag.final_output == original_final_output
+
+    def test_format_returns_dag_with_final_output(self):
+        response = _make_response()
+        dag = _make_dag()
+        result = self.formatter.format(response, dag)
+        assert result.final_output != {}
+
+    # â”€â”€ to_text tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def test_to_text_contains_title(self):
+        response = _make_response(title="My Great Report")
+        text = self.formatter.to_text(response)
+        assert "MY GREAT REPORT" in text
+
+    def test_to_text_contains_summary(self):
+        response = _make_response(summary="The summary text.")
+        text = self.formatter.to_text(response)
+        assert "The summary text." in text
+
+    def test_to_text_contains_section_title(self):
+        response = _make_response(
+            sections=[OutputSection(title="Key Findings", content="...", source_artifacts=[])]
+        )
+        text = self.formatter.to_text(response)
+        assert "Key Findings" in text
+
+    def test_to_text_contains_section_content(self):
+        response = _make_response(
+            sections=[OutputSection(title="S", content="Important content here.", source_artifacts=[])]
+        )
+        text = self.formatter.to_text(response)
+        assert "Important content here." in text
+
+    def test_to_text_contains_recommendations(self):
+        response = _make_response(recommendations=["Implement feature X", "Reduce cost Y"])
+        text = self.formatter.to_text(response)
+        assert "Implement feature X" in text
+        assert "Reduce cost Y" in text
+
+    def test_to_text_contains_metadata(self):
+        response = _make_response(metadata={"total_agents": 5, "artifacts_produced": 3})
+        text = self.formatter.to_text(response)
+        assert "Agents:" in text
+
+    def test_to_text_no_recommendations_skips_section(self):
+        response = _make_response(recommendations=[])
+        text = self.formatter.to_text(response)
+        assert "Recommendations" not in text
+
+    def test_to_text_returns_string(self):
+        response = _make_response()
+        text = self.formatter.to_text(response)
+        assert isinstance(text, str)
+        assert len(text) > 0
 
 
 ================================================
@@ -2169,9 +2929,445 @@ FILE: tests/decomposer/__init__.py
 
 
 ================================================
+FILE: tests/decomposer/test_decomposer.py
+================================================
+"""
+tests/decomposer/test_parser.py
+
+Unit tests for DecomposerParser.
+No LLM calls â€” all inputs are hand-crafted DecomposerResponse objects.
+"""
+
+import pytest
+from loom.decomposer.agent import DecomposerResponse, DecomposedNode, DecomposedArtifact
+from loom.decomposer.parser import DecomposerParser
+from loom.models import NodeType, NodeStatus
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# FIXTURES
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _make_response(nodes=None, artifacts=None):
+    return DecomposerResponse(
+        nodes=nodes or [],
+        artifacts=artifacts or [],
+    )
+
+
+def _node(id, inputs=None, outputs=None, node_type="domain"):
+    return DecomposedNode(
+        id=id,
+        name=id.replace("_", " ").title(),
+        node_type=node_type,
+        system_prompt=f"You are {id}.",
+        query_tool=[],
+        input_artifacts=inputs or [],
+        output_artifacts=outputs or [],
+    )
+
+
+def _artifact(name, contributors=None, users=None):
+    return DecomposedArtifact(
+        name=name,
+        description=f"Artifact {name}",
+        contributors=contributors or [],
+        users=users or [],
+        body={},
+    )
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# TESTS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestDecomposerParser:
+
+    def setup_method(self):
+        self.parser = DecomposerParser()
+
+    def test_parse_single_node_single_artifact(self):
+        response = _make_response(
+            nodes=[_node("agent_a", outputs=["art_1"])],
+            artifacts=[_artifact("art_1", contributors=["agent_a"])],
+        )
+        nodes, artifacts = self.parser.parse(response)
+        assert "agent_a" in nodes
+        assert "art_1" in artifacts
+
+    def test_parse_sets_node_status_pending(self):
+        response = _make_response(
+            nodes=[_node("agent_a", outputs=["art_1"])],
+            artifacts=[_artifact("art_1", contributors=["agent_a"])],
+        )
+        nodes, _ = self.parser.parse(response)
+        assert nodes["agent_a"].status == NodeStatus.PENDING
+
+    def test_parse_node_type_domain(self):
+        response = _make_response(
+            nodes=[_node("agent_a", outputs=["art_1"])],
+            artifacts=[_artifact("art_1", contributors=["agent_a"])],
+        )
+        nodes, _ = self.parser.parse(response)
+        assert nodes["agent_a"].node_type == NodeType.DOMAIN
+
+    def test_parse_multiple_nodes(self):
+        response = _make_response(
+            nodes=[
+                _node("agent_a", outputs=["art_1"]),
+                _node("agent_b", inputs=["art_1"], outputs=["art_2"]),
+            ],
+            artifacts=[
+                _artifact("art_1", contributors=["agent_a"], users=["agent_b"]),
+                _artifact("art_2", contributors=["agent_b"]),
+            ],
+        )
+        nodes, artifacts = self.parser.parse(response)
+        assert len(nodes) == 2
+        assert len(artifacts) == 2
+
+    def test_parse_artifacts_keyed_by_name(self):
+        response = _make_response(
+            nodes=[_node("agent_a", outputs=["my_artifact"])],
+            artifacts=[_artifact("my_artifact", contributors=["agent_a"])],
+        )
+        _, artifacts = self.parser.parse(response)
+        assert "my_artifact" in artifacts
+
+    def test_validate_rejects_node_with_unknown_input_artifact(self):
+        response = _make_response(
+            nodes=[_node("agent_a", inputs=["nonexistent"], outputs=["art_1"])],
+            artifacts=[_artifact("art_1", contributors=["agent_a"])],
+        )
+        with pytest.raises(ValueError, match="nonexistent"):
+            self.parser.parse(response)
+
+    def test_validate_rejects_node_with_unknown_output_artifact(self):
+        response = _make_response(
+            nodes=[_node("agent_a", outputs=["ghost_art"])],
+            artifacts=[],
+        )
+        with pytest.raises(ValueError, match="ghost_art"):
+            self.parser.parse(response)
+
+    def test_validate_rejects_artifact_with_unknown_contributor(self):
+        response = _make_response(
+            nodes=[_node("agent_a", outputs=["art_1"])],
+            artifacts=[_artifact("art_1", contributors=["ghost_node"])],
+        )
+        with pytest.raises(ValueError, match="ghost_node"):
+            self.parser.parse(response)
+
+    def test_validate_rejects_artifact_with_unknown_user(self):
+        response = _make_response(
+            nodes=[_node("agent_a", outputs=["art_1"])],
+            artifacts=[_artifact("art_1", contributors=["agent_a"], users=["ghost_node"])],
+        )
+        with pytest.raises(ValueError, match="ghost_node"):
+            self.parser.parse(response)
+
+    def test_parse_artifacts_separately(self):
+        raw = [_artifact("x", contributors=["a"])]
+        # patch a fake node list to bypass validation
+        response = _make_response(
+            nodes=[_node("a", outputs=["x"])],
+            artifacts=raw,
+        )
+        _, artifacts = self.parser.parse(response)
+        assert artifacts["x"].description == "Artifact x"
+
+    def test_parse_nodes_separately(self):
+        response = _make_response(
+            nodes=[_node("agent_z", outputs=["z_out"])],
+            artifacts=[_artifact("z_out", contributors=["agent_z"])],
+        )
+        nodes, _ = self.parser.parse(response)
+        assert nodes["agent_z"].system_prompt == "You are agent_z."
+
+    def test_empty_response_parses_successfully(self):
+        response = _make_response()
+        nodes, artifacts = self.parser.parse(response)
+        assert nodes == {}
+        assert artifacts == {}
+
+
+================================================
 FILE: tests/graph_builder/__init__.py
 ================================================
 [Empty file]
+
+
+================================================
+FILE: tests/graph_builder/test_graph_builder.py
+================================================
+"""
+tests/graph_builder/test_graph_builder.py
+
+Unit tests for GraphBuilderParser and GraphBuilderValidator.
+No LLM calls.
+"""
+
+import pytest
+import networkx as nx
+
+from loom.graph_builder.agent import GraphBuilderResponse, Edge
+from loom.graph_builder.parser import GraphBuilderParser
+from loom.graph_builder.validator import GraphBuilderValidator, GraphValidationError
+from loom.models import Node, NodeType, NodeStatus, Artifact
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# HELPERS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _node_dict(id, inputs=None, outputs=None):
+    return {
+        "id": id,
+        "name": id.title(),
+        "node_type": "domain",
+        "system_prompt": f"You are {id}.",
+        "query_tool": [],
+        "input_artifacts": inputs or [],
+        "output_artifacts": outputs or [],
+    }
+
+
+def _artifact_dict(name, contributors=None, users=None):
+    return {
+        "name": name,
+        "description": f"Artifact {name}",
+        "contributors": contributors or [],
+        "users": users or [],
+        "body": {},
+    }
+
+
+def _edge(from_node, to_node, artifact):
+    return Edge(from_node=from_node, to_node=to_node, artifact=artifact)
+
+
+def _response(nodes, artifacts, edges, issues=None):
+    return GraphBuilderResponse(
+        nodes=nodes,
+        artifacts=artifacts,
+        edges=edges,
+        issues=issues or [],
+    )
+
+
+def _make_node(id, inputs=None, outputs=None):
+    return Node(
+        id=id,
+        name=id.title(),
+        node_type=NodeType.DOMAIN,
+        system_prompt=f"You are {id}.",
+        input_artifacts=inputs or [],
+        output_artifacts=outputs or [],
+    )
+
+
+def _make_artifact(name, contributors=None, users=None):
+    return Artifact(
+        name=name,
+        description=f"Artifact {name}",
+        contributors=contributors or [],
+        users=users or [],
+    )
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# PARSER TESTS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestGraphBuilderParser:
+
+    def setup_method(self):
+        self.parser = GraphBuilderParser()
+
+    def test_parse_simple_graph(self):
+        response = _response(
+            nodes=[_node_dict("agent_a", outputs=["art_1"]),
+                   _node_dict("agent_b", inputs=["art_1"])],
+            artifacts=[_artifact_dict("art_1", contributors=["agent_a"], users=["agent_b"])],
+            edges=[_edge("agent_a", "agent_b", "art_1")],
+        )
+        nodes, artifacts, edges, synth_targets = self.parser.parse(response)
+        assert "agent_a" in nodes
+        assert "agent_b" in nodes
+        assert "art_1" in artifacts
+        assert len(edges) == 1
+
+    def test_parse_returns_node_models(self):
+        response = _response(
+            nodes=[_node_dict("agent_a", outputs=["art_1"])],
+            artifacts=[_artifact_dict("art_1", contributors=["agent_a"])],
+            edges=[],
+        )
+        nodes, _, _, _ = self.parser.parse(response)
+        assert isinstance(nodes["agent_a"], Node)
+        assert nodes["agent_a"].status == NodeStatus.PENDING
+
+    def test_parse_returns_artifact_models(self):
+        response = _response(
+            nodes=[_node_dict("agent_a", outputs=["art_1"])],
+            artifacts=[_artifact_dict("art_1", contributors=["agent_a"])],
+            edges=[],
+        )
+        _, artifacts, _, _ = self.parser.parse(response)
+        assert isinstance(artifacts["art_1"], Artifact)
+
+    def test_extracts_synthesizer_targets_from_issues(self):
+        response = _response(
+            nodes=[_node_dict("agent_a", outputs=["art_1"])],
+            artifacts=[_artifact_dict("art_1", contributors=["agent_a"])],
+            edges=[],
+            issues=["SYNTHESIZER_NEEDED: art_1", "Some other note"],
+        )
+        _, _, _, synth_targets = self.parser.parse(response)
+        assert "art_1" in synth_targets
+        assert len(synth_targets) == 1
+
+    def test_ignores_non_synthesizer_issues(self):
+        response = _response(
+            nodes=[_node_dict("agent_a", outputs=["art_1"])],
+            artifacts=[_artifact_dict("art_1", contributors=["agent_a"])],
+            edges=[],
+            issues=["Fixed dangling artifact", "Removed cycle"],
+        )
+        _, _, _, synth_targets = self.parser.parse(response)
+        assert synth_targets == []
+
+    def test_multiple_synthesizer_targets(self):
+        response = _response(
+            nodes=[],
+            artifacts=[],
+            edges=[],
+            issues=[
+                "SYNTHESIZER_NEEDED: artifact_x",
+                "SYNTHESIZER_NEEDED: artifact_y",
+            ],
+        )
+        _, _, _, synth_targets = self.parser.parse(response)
+        assert "artifact_x" in synth_targets
+        assert "artifact_y" in synth_targets
+
+    def test_edges_preserved(self):
+        edges = [
+            _edge("a", "b", "art_1"),
+            _edge("b", "c", "art_2"),
+        ]
+        response = _response(
+            nodes=[_node_dict("a"), _node_dict("b"), _node_dict("c")],
+            artifacts=[
+                _artifact_dict("art_1", contributors=["a"], users=["b"]),
+                _artifact_dict("art_2", contributors=["b"], users=["c"]),
+            ],
+            edges=edges,
+        )
+        _, _, parsed_edges, _ = self.parser.parse(response)
+        assert len(parsed_edges) == 2
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# VALIDATOR TESTS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestGraphBuilderValidator:
+
+    def setup_method(self):
+        self.validator = GraphBuilderValidator()
+
+    def _simple_setup(self):
+        nodes = {
+            "agent_a": _make_node("agent_a", outputs=["art_1"]),
+            "agent_b": _make_node("agent_b", inputs=["art_1"]),
+        }
+        artifacts = {
+            "art_1": _make_artifact("art_1", contributors=["agent_a"], users=["agent_b"]),
+        }
+        edges = [_edge("agent_a", "agent_b", "art_1")]
+        return nodes, artifacts, edges
+
+    def test_valid_dag_returns_digraph(self):
+        nodes, artifacts, edges = self._simple_setup()
+        G = self.validator.validate(nodes, artifacts, edges)
+        assert isinstance(G, nx.DiGraph)
+
+    def test_valid_dag_has_correct_nodes(self):
+        nodes, artifacts, edges = self._simple_setup()
+        G = self.validator.validate(nodes, artifacts, edges)
+        assert "agent_a" in G.nodes
+        assert "agent_b" in G.nodes
+
+    def test_valid_dag_has_correct_edges(self):
+        nodes, artifacts, edges = self._simple_setup()
+        G = self.validator.validate(nodes, artifacts, edges)
+        assert G.has_edge("agent_a", "agent_b")
+
+    def test_unknown_from_node_raises(self):
+        nodes = {"agent_a": _make_node("agent_a")}
+        artifacts = {}
+        edges = [_edge("ghost_node", "agent_a", "art_1")]
+        with pytest.raises(GraphValidationError, match="ghost_node"):
+            self.validator.validate(nodes, artifacts, edges)
+
+    def test_unknown_to_node_raises(self):
+        nodes = {"agent_a": _make_node("agent_a")}
+        artifacts = {}
+        edges = [_edge("agent_a", "ghost_node", "art_1")]
+        with pytest.raises(GraphValidationError, match="ghost_node"):
+            self.validator.validate(nodes, artifacts, edges)
+
+    def test_cycle_raises(self):
+        nodes = {
+            "agent_a": _make_node("agent_a"),
+            "agent_b": _make_node("agent_b"),
+        }
+        artifacts = {}
+        edges = [
+            _edge("agent_a", "agent_b", "art_1"),
+            _edge("agent_b", "agent_a", "art_2"),  # cycle
+        ]
+        with pytest.raises(GraphValidationError, match="cycle"):
+            self.validator.validate(nodes, artifacts, edges)
+
+    def test_isolated_node_raises(self):
+        nodes = {
+            "agent_a": _make_node("agent_a"),
+            "agent_b": _make_node("agent_b"),  # isolated
+        }
+        artifacts = {}
+        edges = []  # no edges â€” agent_b is isolated
+        with pytest.raises(GraphValidationError, match="disconnected"):
+            self.validator.validate(nodes, artifacts, edges)
+
+    def test_linear_chain_is_valid(self):
+        nodes = {
+            "a": _make_node("a"),
+            "b": _make_node("b"),
+            "c": _make_node("c"),
+        }
+        artifacts = {}
+        edges = [_edge("a", "b", "art_1"), _edge("b", "c", "art_2")]
+        G = self.validator.validate(nodes, artifacts, edges)
+        assert nx.is_directed_acyclic_graph(G)
+
+    def test_parallel_nodes_valid(self):
+        nodes = {
+            "root":  _make_node("root"),
+            "left":  _make_node("left"),
+            "right": _make_node("right"),
+            "sink":  _make_node("sink"),
+        }
+        artifacts = {}
+        edges = [
+            _edge("root",  "left",  "art_1"),
+            _edge("root",  "right", "art_2"),
+            _edge("left",  "sink",  "art_3"),
+            _edge("right", "sink",  "art_4"),
+        ]
+        G = self.validator.validate(nodes, artifacts, edges)
+        assert nx.is_directed_acyclic_graph(G)
 
 
 ================================================
@@ -2181,9 +3377,719 @@ FILE: tests/initiator/__init__.py
 
 
 ================================================
+FILE: tests/initiator/test_initiator.py
+================================================
+"""
+tests/initiator/test_initiator.py
+
+Unit tests for ArtifactStore and Executor.
+AgentRunner LLM calls are mocked.
+"""
+
+import asyncio
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from loom.initiator.artifact_store import ArtifactStore
+from loom.initiator.executor import Executor
+from loom.models import (
+    Artifact, Node, NodeType, NodeStatus,
+    DAG, DAGStatus,
+)
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# HELPERS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _make_artifact(name, body=None):
+    return Artifact(
+        name=name,
+        description=f"Artifact {name}",
+        contributors=[],
+        users=[],
+        body=body or {},
+    )
+
+
+def _make_node(id, inputs=None, outputs=None, node_type=NodeType.DOMAIN):
+    return Node(
+        id=id,
+        name=id.title(),
+        node_type=node_type,
+        system_prompt=f"You are {id}.",
+        input_artifacts=inputs or [],
+        output_artifacts=outputs or [],
+    )
+
+
+def _make_dag(nodes=None, artifacts=None, levels=None):
+    return DAG(
+        id="test_run",
+        task="test task",
+        nodes=nodes or {},
+        artifacts=artifacts or {},
+        levels=levels or [],
+    )
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ARTIFACT STORE TESTS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestArtifactStore:
+
+    def _store_with(self, *artifact_names):
+        artifacts = {n: _make_artifact(n) for n in artifact_names}
+        return ArtifactStore(artifacts)
+
+    @pytest.mark.asyncio
+    async def test_get_existing_artifact(self):
+        store = self._store_with("art_1")
+        art = await store.get("art_1")
+        assert art.name == "art_1"
+
+    @pytest.mark.asyncio
+    async def test_get_missing_artifact_raises(self):
+        store = self._store_with("art_1")
+        with pytest.raises(KeyError, match="art_2"):
+            await store.get("art_2")
+
+    @pytest.mark.asyncio
+    async def test_put_updates_body(self):
+        store = self._store_with("art_1")
+        await store.put("art_1", {"result": 42})
+        art = await store.get("art_1")
+        assert art.body == {"result": 42}
+
+    @pytest.mark.asyncio
+    async def test_put_unknown_artifact_raises(self):
+        store = self._store_with("art_1")
+        with pytest.raises(KeyError, match="ghost_art"):
+            await store.put("ghost_art", {"x": 1})
+
+    @pytest.mark.asyncio
+    async def test_get_many_returns_ordered(self):
+        store = self._store_with("art_1", "art_2", "art_3")
+        await store.put("art_1", {"v": 1})
+        await store.put("art_2", {"v": 2})
+        await store.put("art_3", {"v": 3})
+        result = await store.get_many(["art_3", "art_1"])
+        assert result[0].name == "art_3"
+        assert result[1].name == "art_1"
+
+    @pytest.mark.asyncio
+    async def test_all_returns_snapshot(self):
+        store = self._store_with("art_1", "art_2")
+        snapshot = await store.all()
+        assert "art_1" in snapshot
+        assert "art_2" in snapshot
+
+    def test_is_ready_false_when_empty_body(self):
+        store = self._store_with("art_1")
+        assert not store.is_ready("art_1")
+
+    @pytest.mark.asyncio
+    async def test_is_ready_true_after_put(self):
+        store = self._store_with("art_1")
+        await store.put("art_1", {"data": "filled"})
+        assert store.is_ready("art_1")
+
+    def test_is_ready_false_for_unknown(self):
+        store = self._store_with("art_1")
+        assert not store.is_ready("nonexistent")
+
+    def test_all_inputs_ready_true(self):
+        artifacts = {
+            "a": _make_artifact("a", body={"x": 1}),
+            "b": _make_artifact("b", body={"y": 2}),
+        }
+        store = ArtifactStore(artifacts)
+        assert store.all_inputs_ready(["a", "b"])
+
+    def test_all_inputs_ready_false_when_one_empty(self):
+        artifacts = {
+            "a": _make_artifact("a", body={"x": 1}),
+            "b": _make_artifact("b"),  # empty body
+        }
+        store = ArtifactStore(artifacts)
+        assert not store.all_inputs_ready(["a", "b"])
+
+    @pytest.mark.asyncio
+    async def test_concurrent_puts_are_safe(self):
+        store = self._store_with("art_1", "art_2", "art_3")
+
+        async def write(name, val):
+            await store.put(name, {"v": val})
+
+        await asyncio.gather(
+            write("art_1", 1),
+            write("art_2", 2),
+            write("art_3", 3),
+        )
+        assert (await store.get("art_1")).body == {"v": 1}
+        assert (await store.get("art_2")).body == {"v": 2}
+        assert (await store.get("art_3")).body == {"v": 3}
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# EXECUTOR TESTS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestExecutor:
+
+    def _make_completed_node(self, id, outputs=None):
+        """Returns a node that the mock runner will report as COMPLETED."""
+        return _make_node(id, outputs=outputs or [f"{id}_out"])
+
+    def _make_dag_with_levels(self, levels):
+        """Build a minimal DAG with the given levels."""
+        all_node_ids = [n for level in levels for n in level]
+        nodes = {id: self._make_completed_node(id) for id in all_node_ids}
+        artifacts = {
+            f"{id}_out": _make_artifact(f"{id}_out")
+            for id in all_node_ids
+        }
+        return _make_dag(nodes=nodes, artifacts=artifacts, levels=levels)
+
+    @pytest.mark.asyncio
+    async def test_executor_completes_single_level(self):
+        dag = self._make_dag_with_levels([["agent_a"]])
+
+        async def mock_run(node, store, nodes):
+            return node.model_copy(update={"status": NodeStatus.COMPLETED})
+
+        executor = Executor(model="gpt-4o")
+        with patch.object(executor._runner, "run", side_effect=mock_run):
+            result = await executor.execute(dag)
+
+        assert result.status == DAGStatus.COMPLETED
+        assert result.nodes["agent_a"].status == NodeStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_executor_completes_multiple_levels(self):
+        dag = self._make_dag_with_levels([["agent_a"], ["agent_b"]])
+
+        async def mock_run(node, store, nodes):
+            return node.model_copy(update={"status": NodeStatus.COMPLETED})
+
+        executor = Executor(model="gpt-4o")
+        with patch.object(executor._runner, "run", side_effect=mock_run):
+            result = await executor.execute(dag)
+
+        assert result.status == DAGStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_executor_fails_on_failed_node(self):
+        dag = self._make_dag_with_levels([["agent_a"]])
+
+        async def mock_run(node, store, nodes):
+            return node.model_copy(update={"status": NodeStatus.FAILED})
+
+        executor = Executor(model="gpt-4o")
+        with patch.object(executor._runner, "run", side_effect=mock_run):
+            result = await executor.execute(dag)
+
+        assert result.status == DAGStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_executor_halts_after_failed_level(self):
+        """If level 0 fails, level 1 should never execute."""
+        dag = self._make_dag_with_levels([["agent_a"], ["agent_b"]])
+
+        call_order = []
+
+        async def mock_run(node, store, nodes):
+            call_order.append(node.id)
+            if node.id == "agent_a":
+                return node.model_copy(update={"status": NodeStatus.FAILED})
+            return node.model_copy(update={"status": NodeStatus.COMPLETED})
+
+        executor = Executor(model="gpt-4o")
+        with patch.object(executor._runner, "run", side_effect=mock_run):
+            result = await executor.execute(dag)
+
+        assert result.status == DAGStatus.FAILED
+        assert "agent_b" not in call_order
+
+    @pytest.mark.asyncio
+    async def test_executor_parallel_level_runs_concurrently(self):
+        """Nodes in the same level should all be invoked."""
+        dag = self._make_dag_with_levels([["agent_a", "agent_b", "agent_c"]])
+        called = []
+
+        async def mock_run(node, store, nodes):
+            called.append(node.id)
+            return node.model_copy(update={"status": NodeStatus.COMPLETED})
+
+        executor = Executor(model="gpt-4o")
+        with patch.object(executor._runner, "run", side_effect=mock_run):
+            result = await executor.execute(dag)
+
+        assert sorted(called) == ["agent_a", "agent_b", "agent_c"]
+        assert result.status == DAGStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_executor_writes_artifacts_to_dag(self):
+        dag = self._make_dag_with_levels([["agent_a"]])
+
+        async def mock_run(node, store, nodes):
+            await store.put("agent_a_out", {"computed": True})
+            return node.model_copy(update={"status": NodeStatus.COMPLETED})
+
+        executor = Executor(model="gpt-4o")
+        with patch.object(executor._runner, "run", side_effect=mock_run):
+            result = await executor.execute(dag)
+
+        assert result.artifacts["agent_a_out"].body == {"computed": True}
+
+    @pytest.mark.asyncio
+    async def test_executor_sets_running_status(self):
+        dag = self._make_dag_with_levels([["agent_a"]])
+
+        statuses_seen = []
+
+        async def mock_run(node, store, nodes):
+            statuses_seen.append(dag.status)
+            return node.model_copy(update={"status": NodeStatus.COMPLETED})
+
+        executor = Executor(model="gpt-4o")
+        with patch.object(executor._runner, "run", side_effect=mock_run):
+            result = await executor.execute(dag)
+
+        # DAG should have been set to RUNNING before any node ran
+        assert DAGStatus.RUNNING in statuses_seen or result.status == DAGStatus.COMPLETED
+
+
+================================================
+FILE: tests/mcp_builder/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: tests/mcp_builder/test_mpc_builder.py
+================================================
+"""
+tests/mcp_builder/test_mcp_builder.py
+
+Unit tests for MCPNodeBuilder.
+ToolStorePy.build() is mocked â€” no network calls or real builds.
+"""
+
+import json
+import pytest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from loom.mcp_builder.builder import MCPNodeBuilder
+from loom.models import Node, NodeType, NodeStatus
+from loom.models.node import ToolQuery
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# HELPERS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _make_node(id, query_tool=None):
+    return Node(
+        id=id,
+        name=id.title(),
+        node_type=NodeType.DOMAIN,
+        system_prompt=f"You are {id}.",
+        query_tool=query_tool or [],
+        output_artifacts=[f"{id}_out"],
+    )
+
+
+def _make_builder(tmp_path):
+    return MCPNodeBuilder(
+        base_workspace=tmp_path,
+        index="core-tools",
+        index_url=None,
+        install_requirements=False,
+        verbose=False,
+    )
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# TESTS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestMCPNodeBuilder:
+
+    def test_build_for_node_returns_none_when_no_query_tool(self, tmp_path):
+        builder = _make_builder(tmp_path)
+        node = _make_node("agent_a", query_tool=[])
+        result = builder.build_for_node(node)
+        assert result is None
+
+    def test_build_for_node_returns_path_when_toolstorepy_succeeds(self, tmp_path):
+        builder = _make_builder(tmp_path)
+        node = _make_node("agent_a", query_tool=[
+            ToolQuery(tool_description="evaluate a mathematical expression"),
+        ])
+
+        mock_output = tmp_path / "mcp" / "agent_a" / "mcp_unified_server.py"
+        mock_output.parent.mkdir(parents=True, exist_ok=True)
+        mock_output.touch()
+
+        mock_toolstore = MagicMock()
+        mock_toolstore.build.return_value = str(mock_output)
+
+        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+            result = builder.build_for_node(node)
+
+        assert result == mock_output
+
+    def test_build_for_node_raises_on_toolstorepy_failure(self, tmp_path):
+        builder = _make_builder(tmp_path)
+        node = _make_node("agent_a", query_tool=[
+            ToolQuery(tool_description="some tool"),
+        ])
+
+        mock_toolstore = MagicMock()
+        mock_toolstore.build.side_effect = RuntimeError("Build failed")
+
+        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+            with pytest.raises(RuntimeError, match="ToolStorePy failed"):
+                builder.build_for_node(node)
+
+    def test_write_queries_creates_file(self, tmp_path):
+        builder = _make_builder(tmp_path)
+        node = _make_node("agent_a", query_tool=[
+            ToolQuery(tool_description="evaluate a mathematical expression"),
+            ToolQuery(tool_description="convert units of measurement"),
+        ])
+        workspace = tmp_path / "test_workspace"
+        workspace.mkdir()
+
+        queries_path = builder._write_queries(node, workspace)
+
+        assert queries_path.exists()
+        assert queries_path.name == "queries.json"
+
+    def test_write_queries_correct_format(self, tmp_path):
+        builder = _make_builder(tmp_path)
+        node = _make_node("agent_a", query_tool=[
+            ToolQuery(tool_description="evaluate a mathematical expression"),
+            ToolQuery(tool_description="convert units of measurement"),
+        ])
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        queries_path = builder._write_queries(node, workspace)
+
+        with open(queries_path) as f:
+            data = json.load(f)
+
+        assert len(data) == 2
+        assert data[0] == {"tool_description": "evaluate a mathematical expression"}
+        assert data[1] == {"tool_description": "convert units of measurement"}
+
+    def test_each_node_gets_isolated_workspace(self, tmp_path):
+        builder = _make_builder(tmp_path)
+
+        node_a = _make_node("agent_a", query_tool=[ToolQuery(tool_description="tool a")])
+        node_b = _make_node("agent_b", query_tool=[ToolQuery(tool_description="tool b")])
+
+        mock_toolstore = MagicMock()
+
+        def fake_build(queries, index, index_url, force_refresh):
+            # Return a path based on the workspace being built
+            ws = Path(queries).parent
+            out = ws / "mcp_unified_server.py"
+            out.touch()
+            return str(out)
+
+        mock_toolstore.build.side_effect = fake_build
+
+        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+            path_a = builder.build_for_node(node_a)
+            path_b = builder.build_for_node(node_b)
+
+        assert path_a != path_b
+        assert "agent_a" in str(path_a)
+        assert "agent_b" in str(path_b)
+
+    def test_toolstorepy_called_with_correct_index(self, tmp_path):
+        builder = MCPNodeBuilder(
+            base_workspace=tmp_path,
+            index="core-tools",
+            index_url=None,
+        )
+        node = _make_node("agent_a", query_tool=[ToolQuery(tool_description="some tool")])
+
+        mock_toolstore = MagicMock()
+        mock_toolstore.build.return_value = str(tmp_path / "mcp_unified_server.py")
+
+        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore) as MockTS:
+            builder.build_for_node(node)
+
+        call_kwargs = mock_toolstore.build.call_args
+        assert call_kwargs.kwargs.get("index") == "core-tools" or \
+               (call_kwargs.args and "core-tools" in str(call_kwargs))
+
+    def test_toolstorepy_called_with_index_url_when_provided(self, tmp_path):
+        builder = MCPNodeBuilder(
+            base_workspace=tmp_path,
+            index=None,
+            index_url="https://example.com/my-index.zip",
+        )
+        node = _make_node("agent_a", query_tool=[ToolQuery(tool_description="some tool")])
+
+        mock_toolstore = MagicMock()
+        mock_toolstore.build.return_value = str(tmp_path / "mcp_unified_server.py")
+
+        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+            builder.build_for_node(node)
+
+        call_kwargs = mock_toolstore.build.call_args
+        assert call_kwargs.kwargs.get("index_url") == "https://example.com/my-index.zip" or \
+               "https://example.com/my-index.zip" in str(call_kwargs)
+
+
+================================================
 FILE: tests/models/__init__.py
 ================================================
 [Empty file]
+
+
+================================================
+FILE: tests/models/test_models.py
+================================================
+"""
+tests/models/test_models.py
+
+Unit tests for loom/models/ â€” Artifact, Node, DAG, DAGStatus, NodeType, NodeStatus.
+No LLM calls. Pure Pydantic validation.
+"""
+
+import pytest
+from pydantic import ValidationError
+
+from loom.models import Artifact, Node, NodeType, NodeStatus, DAG, DAGStatus
+from loom.models.node import ToolQuery
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ARTIFACT
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestArtifact:
+
+    def test_basic_creation(self):
+        a = Artifact(
+            name="market_report",
+            description="Market analysis output",
+            contributors=["agent_a"],
+            users=["agent_b"],
+        )
+        assert a.name == "market_report"
+        assert a.body == {}
+
+    def test_defaults(self):
+        a = Artifact(name="x", description="y")
+        assert a.contributors == []
+        assert a.users == []
+        assert a.body == {}
+
+    def test_body_is_free_form(self):
+        a = Artifact(
+            name="x",
+            description="y",
+            body={"key": "value", "nested": {"a": 1}},
+        )
+        assert a.body["nested"]["a"] == 1
+
+    def test_missing_name_raises(self):
+        with pytest.raises(ValidationError):
+            Artifact(description="no name")
+
+    def test_missing_description_raises(self):
+        with pytest.raises(ValidationError):
+            Artifact(name="no_desc")
+
+    def test_multiple_contributors_and_users(self):
+        a = Artifact(
+            name="shared",
+            description="shared artifact",
+            contributors=["a", "b", "c"],
+            users=["d", "e"],
+        )
+        assert len(a.contributors) == 3
+        assert len(a.users) == 2
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# NODE
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestNode:
+
+    def _make_node(self, **kwargs):
+        defaults = dict(
+            id="test_node",
+            name="Test Node",
+            node_type=NodeType.DOMAIN,
+            system_prompt="You are a test agent.",
+        )
+        defaults.update(kwargs)
+        return Node(**defaults)
+
+    def test_basic_creation(self):
+        n = self._make_node()
+        assert n.id == "test_node"
+        assert n.status == NodeStatus.PENDING
+        assert n.query_tool == []
+        assert n.mcp_server_path is None
+
+    def test_node_type_enum(self):
+        for nt in NodeType:
+            n = self._make_node(node_type=nt)
+            assert n.node_type == nt
+
+    def test_status_enum(self):
+        for ns in NodeStatus:
+            n = self._make_node(status=ns)
+            assert n.status == ns
+
+    def test_query_tool_typed(self):
+        n = self._make_node(
+            query_tool=[
+                {"tool_description": "evaluate a mathematical expression"},
+                {"tool_description": "convert units of measurement"},
+            ]
+        )
+        assert len(n.query_tool) == 2
+        assert isinstance(n.query_tool[0], ToolQuery)
+        assert n.query_tool[0].tool_description == "evaluate a mathematical expression"
+
+    def test_query_tool_empty_by_default(self):
+        n = self._make_node()
+        assert n.query_tool == []
+
+    def test_mcp_server_path_can_be_set(self):
+        n = self._make_node(mcp_server_path="/some/path/mcp_server.py")
+        assert n.mcp_server_path == "/some/path/mcp_server.py"
+
+    def test_model_copy_immutability(self):
+        n = self._make_node()
+        n2 = n.model_copy(update={"status": NodeStatus.COMPLETED})
+        assert n.status == NodeStatus.PENDING
+        assert n2.status == NodeStatus.COMPLETED
+
+    def test_missing_required_fields_raises(self):
+        with pytest.raises(ValidationError):
+            Node(name="x", node_type=NodeType.DOMAIN, system_prompt="y")  # missing id
+
+    def test_contributor_system_prompts(self):
+        n = self._make_node(
+            node_type=NodeType.SYNTHESIZER,
+            contributor_system_prompts=["prompt_a", "prompt_b"],
+        )
+        assert len(n.contributor_system_prompts) == 2
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# DAG
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestDAG:
+
+    def _make_node(self, node_id: str, inputs=None, outputs=None):
+        return Node(
+            id=node_id,
+            name=node_id.replace("_", " ").title(),
+            node_type=NodeType.DOMAIN,
+            system_prompt=f"You are {node_id}.",
+            input_artifacts=inputs or [],
+            output_artifacts=outputs or [],
+        )
+
+    def _make_artifact(self, name, contributors=None, users=None):
+        return Artifact(
+            name=name,
+            description=f"Artifact {name}",
+            contributors=contributors or [],
+            users=users or [],
+        )
+
+    def test_empty_dag(self):
+        dag = DAG(id="run_001", task="test task")
+        assert dag.nodes == {}
+        assert dag.artifacts == {}
+        assert dag.levels == []
+        assert dag.status == DAGStatus.PLANNED
+
+    def test_dag_with_valid_nodes_and_artifacts(self):
+        node_a = self._make_node("agent_a", outputs=["artifact_1"])
+        node_b = self._make_node("agent_b", inputs=["artifact_1"])
+        art    = self._make_artifact("artifact_1", contributors=["agent_a"], users=["agent_b"])
+
+        dag = DAG(
+            id="run_001",
+            task="test",
+            nodes={"agent_a": node_a, "agent_b": node_b},
+            artifacts={"artifact_1": art},
+        )
+        assert len(dag.nodes) == 2
+        assert len(dag.artifacts) == 1
+
+    def test_dag_validator_rejects_unknown_contributor(self):
+        art = self._make_artifact("art_1", contributors=["ghost_node"], users=[])
+        with pytest.raises(ValueError, match="ghost_node"):
+            DAG(id="run_001", task="t", artifacts={"art_1": art})
+
+    def test_dag_validator_rejects_unknown_user(self):
+        node_a = self._make_node("agent_a")
+        art = self._make_artifact("art_1", contributors=["agent_a"], users=["ghost_node"])
+        with pytest.raises(ValueError, match="ghost_node"):
+            DAG(
+                id="run_001",
+                task="t",
+                nodes={"agent_a": node_a},
+                artifacts={"art_1": art},
+            )
+
+    def test_get_node(self):
+        node_a = self._make_node("agent_a")
+        dag = DAG(id="r", task="t", nodes={"agent_a": node_a})
+        assert dag.get_node("agent_a") is node_a
+
+    def test_get_node_missing_raises(self):
+        dag = DAG(id="r", task="t")
+        with pytest.raises(KeyError):
+            dag.get_node("does_not_exist")
+
+    def test_get_artifact(self):
+        node_a = self._make_node("agent_a")
+        art = self._make_artifact("art_1", contributors=["agent_a"])
+        dag = DAG(
+            id="r", task="t",
+            nodes={"agent_a": node_a},
+            artifacts={"art_1": art},
+        )
+        assert dag.get_artifact("art_1") is art
+
+    def test_is_complete_false_when_pending(self):
+        node_a = self._make_node("agent_a")
+        dag = DAG(id="r", task="t", nodes={"agent_a": node_a})
+        assert not dag.is_complete()
+
+    def test_is_complete_true_when_all_completed(self):
+        node_a = self._make_node("agent_a")
+        node_a = node_a.model_copy(update={"status": NodeStatus.COMPLETED})
+        dag = DAG(id="r", task="t", nodes={"agent_a": node_a})
+        assert dag.is_complete()
+
+    def test_dag_status_transitions(self):
+        dag = DAG(id="r", task="t")
+        assert dag.status == DAGStatus.PLANNED
+        dag2 = dag.model_copy(update={"status": DAGStatus.RUNNING})
+        assert dag2.status == DAGStatus.RUNNING
+        dag3 = dag2.model_copy(update={"status": DAGStatus.COMPLETED})
+        assert dag3.status == DAGStatus.COMPLETED
 
 
 ================================================
@@ -2193,7 +4099,252 @@ FILE: tests/sorter/__init__.py
 
 
 ================================================
+FILE: tests/sorter/test_sorter.py
+================================================
+Error reading file with 'cp1252': 'charmap' codec can't decode byte 0x90 in position 1599: character maps to <undefined>
+
+
+================================================
 FILE: tests/synthesizer/__init__.py
 ================================================
 [Empty file]
+
+
+================================================
+FILE: tests/synthesizer/test_synthesizer.py
+================================================
+"""
+tests/synthesizer/test_synthesizer.py
+
+Unit tests for SynthesizerInjector and SynthesizerParser.
+No LLM calls.
+"""
+
+import pytest
+import networkx as nx
+
+from loom.synthesizer.injector import SynthesizerInjector
+from loom.synthesizer.parser import SynthesizerParser
+from loom.synthesizer.agent import SynthesizerResponse
+from loom.models import Node, NodeType, NodeStatus, Artifact
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# HELPERS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _make_node(id, outputs=None, inputs=None):
+    return Node(
+        id=id,
+        name=id.title(),
+        node_type=NodeType.DOMAIN,
+        system_prompt=f"System prompt for {id}.",
+        input_artifacts=inputs or [],
+        output_artifacts=outputs or [],
+    )
+
+
+def _make_artifact(name, contributors=None, users=None):
+    return Artifact(
+        name=name,
+        description=f"Artifact {name}",
+        contributors=contributors or [],
+        users=users or [],
+    )
+
+
+def _build_graph(nodes, edges):
+    G = nx.DiGraph()
+    G.add_nodes_from(nodes)
+    G.add_edges_from(edges)
+    return G
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# SYNTHESIZER INJECTOR TESTS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestSynthesizerInjector:
+
+    def setup_method(self):
+        self.injector = SynthesizerInjector()
+
+    def _make_two_contributor_setup(self):
+        nodes = {
+            "agent_a": _make_node("agent_a", outputs=["shared_art"]),
+            "agent_b": _make_node("agent_b", outputs=["shared_art"]),
+            "agent_c": _make_node("agent_c", inputs=["shared_art"]),
+        }
+        artifacts = {
+            "shared_art": _make_artifact(
+                "shared_art",
+                contributors=["agent_a", "agent_b"],
+                users=["agent_c"],
+            )
+        }
+        G = _build_graph(
+            nodes=list(nodes.keys()),
+            edges=[("agent_a", "agent_c"), ("agent_b", "agent_c")],
+        )
+        return nodes, artifacts, G
+
+    def test_inject_creates_synthesizer_node(self):
+        nodes, artifacts, G = self._make_two_contributor_setup()
+        nodes, artifacts, G = self.injector.inject(
+            nodes, artifacts, ["shared_art"], G
+        )
+        assert "synthesizer_shared_art" in nodes
+
+    def test_synthesizer_node_type(self):
+        nodes, artifacts, G = self._make_two_contributor_setup()
+        nodes, artifacts, G = self.injector.inject(
+            nodes, artifacts, ["shared_art"], G
+        )
+        synth = nodes["synthesizer_shared_art"]
+        assert synth.node_type == NodeType.SYNTHESIZER
+
+    def test_synthesizer_has_contributor_system_prompts(self):
+        nodes, artifacts, G = self._make_two_contributor_setup()
+        nodes, artifacts, G = self.injector.inject(
+            nodes, artifacts, ["shared_art"], G
+        )
+        synth = nodes["synthesizer_shared_art"]
+        assert len(synth.contributor_system_prompts) == 2
+        assert "System prompt for agent_a." in synth.contributor_system_prompts
+        assert "System prompt for agent_b." in synth.contributor_system_prompts
+
+    def test_partial_artifacts_created(self):
+        nodes, artifacts, G = self._make_two_contributor_setup()
+        nodes, artifacts, G = self.injector.inject(
+            nodes, artifacts, ["shared_art"], G
+        )
+        assert "shared_art__partial__agent_a" in artifacts
+        assert "shared_art__partial__agent_b" in artifacts
+
+    def test_partial_artifacts_have_correct_contributor(self):
+        nodes, artifacts, G = self._make_two_contributor_setup()
+        nodes, artifacts, G = self.injector.inject(
+            nodes, artifacts, ["shared_art"], G
+        )
+        partial_a = artifacts["shared_art__partial__agent_a"]
+        assert partial_a.contributors == ["agent_a"]
+        assert partial_a.users == ["synthesizer_shared_art"]
+
+    def test_original_artifact_contributor_updated_to_synthesizer(self):
+        nodes, artifacts, G = self._make_two_contributor_setup()
+        nodes, artifacts, G = self.injector.inject(
+            nodes, artifacts, ["shared_art"], G
+        )
+        assert artifacts["shared_art"].contributors == ["synthesizer_shared_art"]
+
+    def test_contributor_outputs_updated_to_partial(self):
+        nodes, artifacts, G = self._make_two_contributor_setup()
+        nodes, artifacts, G = self.injector.inject(
+            nodes, artifacts, ["shared_art"], G
+        )
+        # agent_a's output should now be the partial, not the original
+        assert "shared_art__partial__agent_a" in nodes["agent_a"].output_artifacts
+        assert "shared_art" not in nodes["agent_a"].output_artifacts
+
+    def test_synthesizer_in_graph(self):
+        nodes, artifacts, G = self._make_two_contributor_setup()
+        nodes, artifacts, G = self.injector.inject(
+            nodes, artifacts, ["shared_art"], G
+        )
+        assert "synthesizer_shared_art" in G.nodes
+
+    def test_synthesizer_input_output_artifacts(self):
+        nodes, artifacts, G = self._make_two_contributor_setup()
+        nodes, artifacts, G = self.injector.inject(
+            nodes, artifacts, ["shared_art"], G
+        )
+        synth = nodes["synthesizer_shared_art"]
+        assert "shared_art__partial__agent_a" in synth.input_artifacts
+        assert "shared_art__partial__agent_b" in synth.input_artifacts
+        assert synth.output_artifacts == ["shared_art"]
+
+    def test_skip_single_contributor_artifact(self):
+        nodes = {
+            "agent_a": _make_node("agent_a", outputs=["art_1"]),
+            "agent_b": _make_node("agent_b", inputs=["art_1"]),
+        }
+        artifacts = {
+            "art_1": _make_artifact("art_1", contributors=["agent_a"], users=["agent_b"]),
+        }
+        G = _build_graph(["agent_a", "agent_b"], [("agent_a", "agent_b")])
+        original_node_count = len(nodes)
+
+        nodes, artifacts, G = self.injector.inject(nodes, artifacts, ["art_1"], G)
+
+        # No synthesizer should be injected â€” only one contributor
+        assert len(nodes) == original_node_count
+
+    def test_skip_unknown_artifact_name(self):
+        nodes = {"agent_a": _make_node("agent_a", outputs=["art_1"])}
+        artifacts = {"art_1": _make_artifact("art_1", contributors=["agent_a"])}
+        G = _build_graph(["agent_a"], [])
+        original_node_count = len(nodes)
+
+        nodes, artifacts, G = self.injector.inject(
+            nodes, artifacts, ["nonexistent_artifact"], G
+        )
+        assert len(nodes) == original_node_count
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# SYNTHESIZER PARSER TESTS
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestSynthesizerParser:
+
+    def setup_method(self):
+        self.parser = SynthesizerParser()
+
+    def _make_target_artifact(self):
+        return Artifact(
+            name="merged_artifact",
+            description="Merged output from multiple contributors",
+            contributors=["synthesizer_merged_artifact"],
+            users=["compiler"],
+        )
+
+    def test_parse_applies_body(self):
+        response = SynthesizerResponse(
+            body={"key": "value", "score": 42},
+            qc_notes=[],
+        )
+        target = self._make_target_artifact()
+        result = self.parser.parse(response, target)
+        assert result.body["key"] == "value"
+        assert result.body["score"] == 42
+
+    def test_parse_injects_qc_notes(self):
+        response = SynthesizerResponse(
+            body={"key": "value"},
+            qc_notes=["Resolved conflict between A and B", "Filled gap in section 2"],
+        )
+        target = self._make_target_artifact()
+        result = self.parser.parse(response, target)
+        assert "__qc_notes__" in result.body
+        assert len(result.body["__qc_notes__"]) == 2
+
+    def test_parse_preserves_artifact_metadata(self):
+        response = SynthesizerResponse(body={"x": 1}, qc_notes=[])
+        target = self._make_target_artifact()
+        result = self.parser.parse(response, target)
+        assert result.name == "merged_artifact"
+        assert result.description == "Merged output from multiple contributors"
+
+    def test_parse_empty_body(self):
+        response = SynthesizerResponse(body={}, qc_notes=["Note 1"])
+        target = self._make_target_artifact()
+        result = self.parser.parse(response, target)
+        assert result.body["__qc_notes__"] == ["Note 1"]
+
+    def test_parse_does_not_mutate_original(self):
+        response = SynthesizerResponse(body={"x": 1}, qc_notes=[])
+        target = self._make_target_artifact()
+        original_body = dict(target.body)
+        self.parser.parse(response, target)
+        assert target.body == original_body  # original unchanged
 

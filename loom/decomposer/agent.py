@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import instructor
-import litellm
 from litellm import completion
 from pydantic import BaseModel
 
-from loom.models import Artifact, Node, NodeType
+from loom.models.node import ToolQuery
 
 
-# ── Instructor client wrapping litellm ────────────────────────────────────────
+# ── Instructor client ─────────────────────────────────────────────────────────
 
 _client = instructor.from_litellm(completion)
 
@@ -37,11 +35,12 @@ class DecomposedArtifact(BaseModel):
 class DecomposedNode(BaseModel):
     id: str
     name: str
-    node_type: NodeType
+    node_type: str
     system_prompt: str
-    query_tool: dict = {}
-    input_artifacts: list[str]
-    output_artifacts: list[str]
+    # FIX: list[ToolQuery] not dict — must match Node.query_tool type
+    query_tool: list[ToolQuery] = []
+    input_artifacts: list[str] = []
+    output_artifacts: list[str] = []
 
 
 class DecomposerResponse(BaseModel):
@@ -55,9 +54,6 @@ class DecomposerAgent:
     """
     Stage 1 — Takes a raw complex task and returns a list of
     domain agent nodes and artifacts via a single LLM call.
-
-    Does not build the DAG — that is the graph builder's job.
-    Only decomposes the task into its constituent parts.
     """
 
     def __init__(self, model: str = "gpt-4o"):
@@ -65,15 +61,6 @@ class DecomposerAgent:
         self.system_prompt = _load_prompt()
 
     def run(self, task: str) -> DecomposerResponse:
-        """
-        Synchronous decomposition call.
-
-        Args:
-            task: The raw complex task string from the user.
-
-        Returns:
-            DecomposerResponse containing nodes and artifacts.
-        """
         response: DecomposerResponse = _client.chat.completions.create(
             model=self.model,
             response_model=DecomposerResponse,
@@ -85,15 +72,6 @@ class DecomposerAgent:
         return response
 
     async def arun(self, task: str) -> DecomposerResponse:
-        """
-        Async decomposition call for use within the pipeline executor.
-
-        Args:
-            task: The raw complex task string from the user.
-
-        Returns:
-            DecomposerResponse containing nodes and artifacts.
-        """
         response: DecomposerResponse = await _client.chat.completions.acreate(
             model=self.model,
             response_model=DecomposerResponse,

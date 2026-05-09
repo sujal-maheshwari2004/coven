@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
-import tempfile
 from pathlib import Path
 
 from loom.models import Node
+
+# Import at module level so tests can patch "loom.mcp_builder.builder.ToolStorePy"
+try:
+    from toolstorepy import ToolStorePy
+except ImportError:  # allow loom to load even if toolstorepy isn't installed
+    ToolStorePy = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -35,20 +40,11 @@ class MCPNodeBuilder:
         install_requirements: bool = False,
         verbose: bool = False,
     ):
-        """
-        Args:
-            base_workspace: Root workspace for this DAG run.
-                            Node workspaces will be created as subdirectories.
-            index: ToolStorePy built-in index name (default: "core-tools").
-            index_url: Direct URL to a custom index archive. Overrides index.
-            install_requirements: Whether to install repo requirements in venv.
-            verbose: Enable verbose ToolStorePy logging.
-        """
-        self.base_workspace      = Path(base_workspace)
-        self.index               = index
-        self.index_url           = index_url
+        self.base_workspace       = Path(base_workspace)
+        self.index                = index
+        self.index_url            = index_url
         self.install_requirements = install_requirements
-        self.verbose             = verbose
+        self.verbose              = verbose
 
         self.base_workspace.mkdir(parents=True, exist_ok=True)
 
@@ -63,12 +59,15 @@ class MCPNodeBuilder:
             Path to mcp_unified_server.py, or None if node has no tool queries.
 
         Raises:
-            RuntimeError: If ToolStorePy build fails.
+            RuntimeError: If ToolStorePy is not installed or build fails.
         """
         if not node.query_tool:
             return None
 
-        from toolstorepy import ToolStorePy  # imported here so loom works without it if unused
+        if ToolStorePy is None:
+            raise RuntimeError(
+                "toolstorepy is not installed. Run: pip install toolstorepy"
+            )
 
         node_workspace = self.base_workspace / "mcp" / node.id
         node_workspace.mkdir(parents=True, exist_ok=True)
@@ -108,16 +107,6 @@ class MCPNodeBuilder:
     def _write_queries(self, node: Node, workspace: Path) -> Path:
         """
         Write node's query_tool list as a ToolStorePy-compatible queries.json.
-
-        Format:
-            [{"tool_description": "..."}]
-
-        Args:
-            node: Node whose query_tool to serialize.
-            workspace: Directory to write queries.json into.
-
-        Returns:
-            Path to written queries.json.
         """
         queries = [{"tool_description": tq.tool_description} for tq in node.query_tool]
         queries_path = workspace / "queries.json"

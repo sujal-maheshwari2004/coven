@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Artifact(BaseModel):
@@ -10,6 +10,22 @@ class Artifact(BaseModel):
     Artifacts are the edges of the DAG — the contributors and users
     fields define the graph structure implicitly.
     """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "market_analysis_report",
+                "description": "Comprehensive analysis of target market size, segments, and growth trends.",
+                "contributors": ["market_researcher"],
+                "users": ["strategy_agent", "pitch_deck_agent"],
+                "body": {
+                    "market_size": "4.2B",
+                    "segments": ["enterprise", "smb"],
+                    "growth_rate": "12% YoY"
+                }
+            }
+        }
+    )
 
     name: str = Field(
         ...,
@@ -35,18 +51,3 @@ class Artifact(BaseModel):
         default_factory=dict,
         description="The actual artifact payload. Free-form JSON produced by contributors."
     )
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "market_analysis_report",
-                "description": "Comprehensive analysis of target market size, segments, and growth trends.",
-                "contributors": ["market_researcher"],
-                "users": ["strategy_agent", "pitch_deck_agent"],
-                "body": {
-                    "market_size": "4.2B",
-                    "segments": ["enterprise", "smb"],
-                    "growth_rate": "12% YoY"
-                }
-            }
-        }

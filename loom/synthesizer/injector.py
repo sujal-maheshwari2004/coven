@@ -19,25 +19,6 @@ class SynthesizerInjector:
     Scans the DAG for artifacts with multiple contributors and
     auto-injects a Synthesizer node between the contributors and
     the artifact's downstream users.
-
-    Injection pattern — before:
-        [Agent A] ──┐
-                    ├──→ artifact ──→ [User C]
-        [Agent B] ──┘
-
-    After injection:
-        [Agent A] ──┐
-                    ├──→ partial_artifact_a/b ──→ [Synthesizer] ──→ artifact ──→ [User C]
-        [Agent B] ──┘
-
-    The synthesizer node:
-    - Receives all partial contributions as input artifacts
-    - Produces the final merged artifact as its output
-    - Carries the system prompts of all contributors for context
-    - Gets its own synthesizer system prompt
-
-    The original artifact's contributors list is replaced with
-    just the synthesizer node ID, keeping downstream users unchanged.
     """
 
     def inject(
@@ -47,18 +28,6 @@ class SynthesizerInjector:
         synthesizer_targets: list[str],
         G: nx.DiGraph,
     ) -> tuple[dict[str, Node], dict[str, Artifact], nx.DiGraph]:
-        """
-        Inject synthesizer nodes for all targeted artifacts.
-
-        Args:
-            nodes: Current node registry.
-            artifacts: Current artifact registry.
-            synthesizer_targets: Artifact names flagged for synthesis.
-            G: Current DAG graph (will be mutated).
-
-        Returns:
-            Updated (nodes, artifacts, G) with synthesizer nodes injected.
-        """
         synth_prompt = _load_synth_prompt()
 
         for artifact_name in synthesizer_targets:
@@ -93,14 +62,12 @@ class SynthesizerInjector:
 
         synth_node_id = f"synthesizer_{artifact_name}"
 
-        # ── Collect contributor system prompts ────────────────────────────────
         contributor_prompts = [
             nodes[c].system_prompt
             for c in artifact.contributors
             if c in nodes
         ]
 
-        # ── Create partial artifacts — one per contributor ────────────────────
         partial_artifact_names: list[str] = []
 
         for contributor_id in artifact.contributors:
@@ -118,7 +85,6 @@ class SynthesizerInjector:
             artifacts[partial_name] = partial_artifact
             partial_artifact_names.append(partial_name)
 
-            # Update contributor node's output_artifacts to point to partial
             contributor_node = nodes[contributor_id]
             updated_outputs = [
                 partial_name if a == artifact_name else a
@@ -128,13 +94,13 @@ class SynthesizerInjector:
                 update={"output_artifacts": updated_outputs}
             )
 
-        # ── Create synthesizer node ───────────────────────────────────────────
+        # FIX: query_tool=[] not query_tool={} — Node.query_tool is list[ToolQuery]
         synth_node = Node(
             id=synth_node_id,
             name=f"Synthesizer: {artifact_name}",
             node_type=NodeType.SYNTHESIZER,
             system_prompt=synth_prompt,
-            query_tool={},
+            query_tool=[],
             input_artifacts=partial_artifact_names,
             output_artifacts=[artifact_name],
             status=NodeStatus.PENDING,
@@ -142,24 +108,19 @@ class SynthesizerInjector:
         )
         nodes[synth_node_id] = synth_node
 
-        # ── Update original artifact — now only synthesizer contributes ───────
         artifacts[artifact_name] = artifact.model_copy(
             update={"contributors": [synth_node_id]}
         )
 
-        # ── Update DAG graph ──────────────────────────────────────────────────
         G.add_node(synth_node_id)
 
-        # Edges from contributors → synthesizer
         for contributor_id in artifact.contributors:
             if contributor_id != synth_node_id:
                 G.add_edge(contributor_id, synth_node_id, artifact=artifact_name)
 
-        # Edges from synthesizer → original downstream users
         for user_id in artifact.users:
             G.add_edge(synth_node_id, user_id, artifact=artifact_name)
 
-        # Remove old direct contributor → user edges for this artifact
         for contributor_id in artifact.contributors:
             for user_id in artifact.users:
                 if G.has_edge(contributor_id, user_id):
