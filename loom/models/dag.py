@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from enum import Enum
 from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
@@ -10,13 +12,10 @@ class DAGStatus(str, Enum):
     """
     Overall execution state of the DAG.
     """
-    PLANNED    = "planned"     # DAG built, not yet executing
-    RUNNING    = "running"     # Currently executing levels
-    COMPLETED  = "completed"   # All nodes completed successfully
-    FAILED     = "failed"      # One or more nodes failed
-
-
-from enum import Enum
+    PLANNED    = "planned"
+    RUNNING    = "running"
+    COMPLETED  = "completed"
+    FAILED     = "failed"
 
 
 class DAG(BaseModel):

@@ -1,0 +1,2199 @@
+Directory structure:
+└── loom-ai/
+    ├── README.md
+    ├── main.py
+    ├── pyproject.toml
+    ├── .env.example
+    ├── .python-version
+    ├── examples/
+    │   └── research_report.py
+    ├── loom/
+    │   ├── __init__.py
+    │   ├── compiler/
+    │   │   ├── __init__.py
+    │   │   ├── agent.py
+    │   │   └── formatter.py
+    │   ├── decomposer/
+    │   │   ├── __init__.py
+    │   │   ├── agent.py
+    │   │   └── parser.py
+    │   ├── graph_builder/
+    │   │   ├── __init__.py
+    │   │   ├── agent.py
+    │   │   ├── parser.py
+    │   │   └── validator.py
+    │   ├── initiator/
+    │   │   ├── __init__.py
+    │   │   ├── agent_runner.py
+    │   │   ├── artifact_store.py
+    │   │   └── executor.py
+    │   ├── models/
+    │   │   ├── __init__.py
+    │   │   ├── artifact.py
+    │   │   ├── dag.py
+    │   │   └── node.py
+    │   ├── sorter/
+    │   │   ├── __init__.py
+    │   │   ├── topological.py
+    │   │   └── validator.py
+    │   └── synthesizer/
+    │       ├── __init__.py
+    │       ├── agent.py
+    │       ├── injector.py
+    │       └── parser.py
+    ├── prompts/
+    │   ├── compiler.txt
+    │   ├── decomposer.txt
+    │   ├── graph_builder.txt
+    │   └── synthesizer.txt
+    └── tests/
+        ├── __init__.py
+        ├── compiler/
+        │   └── __init__.py
+        ├── decomposer/
+        │   └── __init__.py
+        ├── graph_builder/
+        │   └── __init__.py
+        ├── initiator/
+        │   └── __init__.py
+        ├── models/
+        │   └── __init__.py
+        ├── sorter/
+        │   └── __init__.py
+        └── synthesizer/
+            └── __init__.py
+
+================================================
+FILE: README.md
+================================================
+[Empty file]
+
+
+================================================
+FILE: main.py
+================================================
+def main():
+    print("Hello from loom-ai!")
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: pyproject.toml
+================================================
+[project]
+name = "loom-ai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+
+
+================================================
+FILE: .env.example
+================================================
+[Empty file]
+
+
+================================================
+FILE: .python-version
+================================================
+3.11
+
+
+
+================================================
+FILE: examples/research_report.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: loom/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: loom/compiler/__init__.py
+================================================
+from .agent import CompilerAgent, CompilerResponse, OutputSection
+from .formatter import CompilerFormatter
+
+__all__ = [
+    "CompilerAgent",
+    "CompilerResponse",
+    "OutputSection",
+    "CompilerFormatter",
+]
+
+
+================================================
+FILE: loom/compiler/agent.py
+================================================
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import instructor
+from litellm import completion
+from pydantic import BaseModel
+
+from loom.models import DAG, Artifact
+
+
+# â”€â”€ Instructor client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+_client = instructor.from_litellm(completion)
+
+# â”€â”€ Prompt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "compiler.txt"
+
+
+def _load_prompt() -> str:
+    return _PROMPT_PATH.read_text(encoding="utf-8")
+
+
+# â”€â”€ Response schema â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class OutputSection(BaseModel):
+    title: str
+    content: str
+    source_artifacts: list[str]
+
+
+class CompilerResponse(BaseModel):
+    title: str
+    summary: str
+    sections: list[OutputSection]
+    recommendations: list[str]
+    metadata: dict
+
+
+# â”€â”€ Agent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class CompilerAgent:
+    """
+    Stage 5 â€” Takes all completed artifacts from the executed DAG
+    and compiles them into a single coherent final output.
+
+    Responsibilities:
+    - Synthesize all artifacts into a unified response
+    - Organize content into logical sections
+    - Surface synthesis decisions and metadata
+    - Directly address the user's original task
+    """
+
+    def __init__(self, model: str = "gpt-4o"):
+        self.model = model
+        self.system_prompt = _load_prompt()
+
+    def _build_user_message(self, dag: DAG) -> str:
+        """
+        Build compiler context from the completed DAG.
+
+        Includes the original task and all produced artifact bodies.
+        Filters out partial artifacts (synthesizer intermediates)
+        since their content is already merged into final artifacts.
+        """
+        final_artifacts = {
+            name: artifact
+            for name, artifact in dag.artifacts.items()
+            if "__partial__" not in name
+        }
+
+        payload = {
+            "task": dag.task,
+            "artifacts": [
+                {
+                    "name": artifact.name,
+                    "description": artifact.description,
+                    "body": artifact.body,
+                }
+                for artifact in final_artifacts.values()
+            ],
+            "total_agents": len(dag.nodes),
+            "total_artifacts": len(final_artifacts),
+        }
+
+        return json.dumps(payload, indent=2)
+
+    def run(self, dag: DAG) -> CompilerResponse:
+        """
+        Synchronous compilation call.
+
+        Args:
+            dag: Fully executed DAG with all artifact bodies populated.
+
+        Returns:
+            CompilerResponse â€” the final structured output.
+        """
+        response: CompilerResponse = _client.chat.completions.create(
+            model=self.model,
+            response_model=CompilerResponse,
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user",   "content": self._build_user_message(dag)},
+            ],
+        )
+        return response
+
+    async def arun(self, dag: DAG) -> CompilerResponse:
+        """
+        Async compilation call.
+
+        Args:
+            dag: Fully executed DAG with all artifact bodies populated.
+
+        Returns:
+            CompilerResponse â€” the final structured output.
+        """
+        response: CompilerResponse = await _client.chat.completions.acreate(
+            model=self.model,
+            response_model=CompilerResponse,
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user",   "content": self._build_user_message(dag)},
+            ],
+        )
+        return response
+
+
+================================================
+FILE: loom/compiler/formatter.py
+================================================
+from __future__ import annotations
+
+from loom.models import DAG
+from .agent import CompilerResponse
+
+
+class CompilerFormatter:
+    """
+    Applies the CompilerResponse back onto the DAG as the final output.
+
+    Converts the structured CompilerResponse into a clean dict
+    stored in dag.final_output, ready for the caller to consume,
+    serialize, or display.
+
+    Also produces a plain text rendering for quick human reading.
+    """
+
+    def format(
+        self,
+        response: CompilerResponse,
+        dag: DAG,
+    ) -> DAG:
+        """
+        Write the compiled output into dag.final_output.
+
+        Args:
+            response: CompilerResponse from CompilerAgent.
+            dag: The completed DAG.
+
+        Returns:
+            DAG with final_output populated.
+        """
+        final_output = {
+            "title":           response.title,
+            "summary":         response.summary,
+            "sections":        [s.model_dump() for s in response.sections],
+            "recommendations": response.recommendations,
+            "metadata": {
+                **response.metadata,
+                "dag_id":            dag.id,
+                "task":              dag.task,
+                "total_agents":      len(dag.nodes),
+                "artifacts_produced": len([
+                    a for a in dag.artifacts
+                    if "__partial__" not in a
+                ]),
+            },
+        }
+
+        return dag.model_copy(update={"final_output": final_output})
+
+    def to_text(self, response: CompilerResponse) -> str:
+        """
+        Render the CompilerResponse as a plain text string.
+        Useful for CLI output, logging, or simple display.
+
+        Args:
+            response: CompilerResponse from CompilerAgent.
+
+        Returns:
+            Formatted plain text string.
+        """
+        lines: list[str] = []
+
+        lines.append("=" * 60)
+        lines.append(response.title.upper())
+        lines.append("=" * 60)
+        lines.append("")
+        lines.append(response.summary)
+        lines.append("")
+
+        for section in response.sections:
+            lines.append(f"â”€â”€ {section.title} {'â”€' * (50 - len(section.title))}")
+            lines.append(section.content)
+            lines.append(
+                f"  [sources: {', '.join(section.source_artifacts)}]"
+            )
+            lines.append("")
+
+        if response.recommendations:
+            lines.append("â”€â”€ Recommendations " + "â”€" * 41)
+            for i, rec in enumerate(response.recommendations, 1):
+                lines.append(f"  {i}. {rec}")
+            lines.append("")
+
+        meta = response.metadata
+        lines.append("â”€â”€ Metadata " + "â”€" * 48)
+        lines.append(f"  Agents: {meta.get('total_agents', 'â€”')}")
+        lines.append(f"  Artifacts: {meta.get('artifacts_produced', 'â€”')}")
+
+        if meta.get("synthesis_decisions"):
+            lines.append("  Synthesis decisions:")
+            for decision in meta["synthesis_decisions"]:
+                lines.append(f"    â€¢ {decision}")
+
+        lines.append("=" * 60)
+
+        return "\n".join(lines)
+
+
+================================================
+FILE: loom/decomposer/__init__.py
+================================================
+from .agent import DecomposerAgent, DecomposerResponse
+from .parser import DecomposerParser
+
+__all__ = [
+    "DecomposerAgent",
+    "DecomposerResponse",
+    "DecomposerParser",
+]
+
+
+================================================
+FILE: loom/decomposer/agent.py
+================================================
+[Binary file]
+
+
+================================================
+FILE: loom/decomposer/parser.py
+================================================
+from __future__ import annotations
+
+from loom.models import Artifact, Node, NodeType, NodeStatus
+from .agent import DecomposerResponse, DecomposedNode, DecomposedArtifact
+
+
+class DecomposerParser:
+    """
+    Converts the raw DecomposerResponse from the LLM into
+    validated Artifact and Node model instances.
+
+    Keeps parsing logic separate from the LLM call so each
+    can be tested and changed independently.
+    """
+
+    def parse_artifacts(
+        self,
+        raw_artifacts: list[DecomposedArtifact]
+    ) -> dict[str, Artifact]:
+        """
+        Convert raw artifact dicts into Artifact models keyed by name.
+
+        Args:
+            raw_artifacts: List of DecomposedArtifact from LLM response.
+
+        Returns:
+            Dict of artifact name â†’ Artifact model.
+        """
+        artifacts: dict[str, Artifact] = {}
+
+        for raw in raw_artifacts:
+            artifact = Artifact(
+                name=raw.name,
+                description=raw.description,
+                contributors=raw.contributors,
+                users=raw.users,
+                body=raw.body,
+            )
+            artifacts[artifact.name] = artifact
+
+        return artifacts
+
+    def parse_nodes(
+        self,
+        raw_nodes: list[DecomposedNode]
+    ) -> dict[str, Node]:
+        """
+        Convert raw node dicts into Node models keyed by node ID.
+
+        Args:
+            raw_nodes: List of DecomposedNode from LLM response.
+
+        Returns:
+            Dict of node ID â†’ Node model.
+        """
+        nodes: dict[str, Node] = {}
+
+        for raw in raw_nodes:
+            node = Node(
+                id=raw.id,
+                name=raw.name,
+                node_type=NodeType(raw.node_type),
+                system_prompt=raw.system_prompt,
+                query_tool=raw.query_tool,
+                input_artifacts=raw.input_artifacts,
+                output_artifacts=raw.output_artifacts,
+                status=NodeStatus.PENDING,
+            )
+            nodes[node.id] = node
+
+        return nodes
+
+    def parse(self, response: DecomposerResponse) -> tuple[dict[str, Node], dict[str, Artifact]]:
+        """
+        Full parse of a DecomposerResponse into nodes and artifacts.
+
+        Args:
+            response: DecomposerResponse from DecomposerAgent.
+
+        Returns:
+            Tuple of (nodes dict, artifacts dict).
+        """
+        artifacts = self.parse_artifacts(response.artifacts)
+        nodes     = self.parse_nodes(response.nodes)
+
+        self._validate_references(nodes, artifacts)
+
+        return nodes, artifacts
+
+    def _validate_references(
+        self,
+        nodes: dict[str, Node],
+        artifacts: dict[str, Artifact],
+    ) -> None:
+        """
+        Ensure all artifact references in nodes point to real artifacts,
+        and all contributor/user references in artifacts point to real nodes.
+
+        Raises:
+            ValueError: If any reference is broken.
+        """
+        artifact_names = set(artifacts.keys())
+        node_ids       = set(nodes.keys())
+
+        for node_id, node in nodes.items():
+            for name in node.input_artifacts:
+                if name not in artifact_names:
+                    raise ValueError(
+                        f"Node '{node_id}' references unknown input artifact '{name}'."
+                    )
+            for name in node.output_artifacts:
+                if name not in artifact_names:
+                    raise ValueError(
+                        f"Node '{node_id}' references unknown output artifact '{name}'."
+                    )
+
+        for artifact_name, artifact in artifacts.items():
+            for contributor in artifact.contributors:
+                if contributor not in node_ids:
+                    raise ValueError(
+                        f"Artifact '{artifact_name}' contributor '{contributor}' "
+                        f"does not match any node ID."
+                    )
+            for user in artifact.users:
+                if user not in node_ids:
+                    raise ValueError(
+                        f"Artifact '{artifact_name}' user '{user}' "
+                        f"does not match any node ID."
+                    )
+
+
+================================================
+FILE: loom/graph_builder/__init__.py
+================================================
+from .agent import GraphBuilderAgent, GraphBuilderResponse, Edge
+from .parser import GraphBuilderParser
+from .validator import GraphBuilderValidator, GraphValidationError
+
+__all__ = [
+    "GraphBuilderAgent",
+    "GraphBuilderResponse",
+    "Edge",
+    "GraphBuilderParser",
+    "GraphBuilderValidator",
+    "GraphValidationError",
+]
+
+
+================================================
+FILE: loom/graph_builder/agent.py
+================================================
+[Binary file]
+
+
+================================================
+FILE: loom/graph_builder/parser.py
+================================================
+from __future__ import annotations
+
+from loom.models import Artifact, Node, NodeType, NodeStatus
+from .agent import GraphBuilderResponse, Edge
+
+
+class GraphBuilderParser:
+    """
+    Converts the GraphBuilderResponse into updated Node and Artifact
+    model instances, incorporating any repairs the LLM made.
+
+    Also extracts synthesizer injection hints from the issues list.
+    """
+
+    def parse(
+        self,
+        response: GraphBuilderResponse,
+    ) -> tuple[dict[str, Node], dict[str, Artifact], list[Edge], list[str]]:
+        """
+        Full parse of GraphBuilderResponse.
+
+        Args:
+            response: GraphBuilderResponse from GraphBuilderAgent.
+
+        Returns:
+            Tuple of:
+            - nodes dict (corrected)
+            - artifacts dict (corrected)
+            - edges list
+            - synthesizer_targets: artifact names needing synthesizer injection
+        """
+        nodes     = self._parse_nodes(response.nodes)
+        artifacts = self._parse_artifacts(response.artifacts)
+        edges     = response.edges
+        synthesizer_targets = self._extract_synthesizer_targets(response.issues)
+
+        return nodes, artifacts, edges, synthesizer_targets
+
+    def _parse_nodes(self, raw_nodes: list[dict]) -> dict[str, Node]:
+        nodes: dict[str, Node] = {}
+        for raw in raw_nodes:
+            node = Node(
+                id=raw["id"],
+                name=raw["name"],
+                node_type=NodeType(raw["node_type"]),
+                system_prompt=raw["system_prompt"],
+                query_tool=raw.get("query_tool", {}),
+                input_artifacts=raw.get("input_artifacts", []),
+                output_artifacts=raw.get("output_artifacts", []),
+                status=NodeStatus.PENDING,
+            )
+            nodes[node.id] = node
+        return nodes
+
+    def _parse_artifacts(self, raw_artifacts: list[dict]) -> dict[str, Artifact]:
+        artifacts: dict[str, Artifact] = {}
+        for raw in raw_artifacts:
+            artifact = Artifact(
+                name=raw["name"],
+                description=raw["description"],
+                contributors=raw.get("contributors", []),
+                users=raw.get("users", []),
+                body=raw.get("body", {}),
+            )
+            artifacts[artifact.name] = artifact
+        return artifacts
+
+    def _extract_synthesizer_targets(self, issues: list[str]) -> list[str]:
+        """
+        Scan the issues list for SYNTHESIZER_NEEDED hints emitted by the LLM.
+
+        Returns:
+            List of artifact names that need a synthesizer node injected.
+        """
+        targets: list[str] = []
+        for issue in issues:
+            if issue.startswith("SYNTHESIZER_NEEDED:"):
+                artifact_name = issue.split(":", 1)[1].strip()
+                targets.append(artifact_name)
+        return targets
+
+
+================================================
+FILE: loom/graph_builder/validator.py
+================================================
+from __future__ import annotations
+
+import networkx as nx
+
+from loom.models import Artifact, Node
+from .agent import Edge
+
+
+class GraphValidationError(Exception):
+    """Raised when the DAG fails structural validation."""
+    pass
+
+
+class GraphBuilderValidator:
+    """
+    Pure algorithmic validation of the DAG structure using networkx.
+
+    Runs AFTER the LLM graph builder and parser have produced nodes,
+    artifacts, and edges. This is the hard safety net â€” if the LLM
+    missed a cycle or produced a disconnected graph, this catches it.
+
+    Raises GraphValidationError on any structural problem.
+    """
+
+    def validate(
+        self,
+        nodes: dict[str, Node],
+        artifacts: dict[str, Artifact],
+        edges: list[Edge],
+    ) -> nx.DiGraph:
+        """
+        Build and validate the networkx DiGraph.
+
+        Args:
+            nodes: Node dict from GraphBuilderParser.
+            artifacts: Artifact dict from GraphBuilderParser.
+            edges: Edge list from GraphBuilderParser.
+
+        Returns:
+            Valid nx.DiGraph ready for topological sort.
+
+        Raises:
+            GraphValidationError: On cycles, unknown node refs, or isolated nodes.
+        """
+        G = self._build_graph(nodes, edges)
+
+        self._check_unknown_nodes(nodes, edges)
+        self._check_cycles(G)
+        self._check_isolated_nodes(G, nodes)
+
+        return G
+
+    def _build_graph(
+        self,
+        nodes: dict[str, Node],
+        edges: list[Edge],
+    ) -> nx.DiGraph:
+        G = nx.DiGraph()
+        G.add_nodes_from(nodes.keys())
+        for edge in edges:
+            G.add_edge(edge.from_node, edge.to_node, artifact=edge.artifact)
+        return G
+
+    def _check_unknown_nodes(
+        self,
+        nodes: dict[str, Node],
+        edges: list[Edge],
+    ) -> None:
+        node_ids = set(nodes.keys())
+        for edge in edges:
+            if edge.from_node not in node_ids:
+                raise GraphValidationError(
+                    f"Edge references unknown from_node '{edge.from_node}'."
+                )
+            if edge.to_node not in node_ids:
+                raise GraphValidationError(
+                    f"Edge references unknown to_node '{edge.to_node}'."
+                )
+
+    def _check_cycles(self, G: nx.DiGraph) -> None:
+        if not nx.is_directed_acyclic_graph(G):
+            cycles = list(nx.simple_cycles(G))
+            raise GraphValidationError(
+                f"DAG contains cycles: {cycles}. "
+                f"The graph builder failed to resolve all circular dependencies."
+            )
+
+    def _check_isolated_nodes(
+        self,
+        G: nx.DiGraph,
+        nodes: dict[str, Node],
+    ) -> None:
+        """
+        Warn on nodes with no edges at all.
+        These are either entry points with no dependencies (acceptable)
+        or genuinely disconnected nodes (problematic).
+
+        We allow nodes with no incoming edges (DAG roots) but flag
+        nodes with neither incoming nor outgoing edges.
+        """
+        isolated = list(nx.isolates(G))
+        if isolated:
+            raise GraphValidationError(
+                f"The following nodes have no edges at all and are disconnected "
+                f"from the DAG: {isolated}. Every node must produce or consume "
+                f"at least one artifact."
+            )
+
+
+================================================
+FILE: loom/initiator/__init__.py
+================================================
+from .executor import Executor
+from .agent_runner import AgentRunner
+from .artifact_store import ArtifactStore
+
+__all__ = [
+    "Executor",
+    "AgentRunner",
+    "ArtifactStore",
+]
+
+
+================================================
+FILE: loom/initiator/agent_runner.py
+================================================
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import instructor
+from litellm import completion
+from pydantic import BaseModel
+
+from loom.models import Node, NodeType, NodeStatus, Artifact
+from .artifact_store import ArtifactStore
+from loom.synthesizer import SynthesizerAgent, SynthesizerParser
+
+
+# â”€â”€ Instructor client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+_client = instructor.from_litellm(completion)
+
+
+# â”€â”€ Domain agent response schema â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class DomainAgentResponse(BaseModel):
+    """
+    Structured output for a domain agent.
+    Each output artifact gets its own body keyed by artifact name.
+    """
+    outputs: dict[str, dict]   # artifact_name â†’ artifact body
+
+
+# â”€â”€ Agent Runner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class AgentRunner:
+    """
+    Executes a single node in the DAG.
+
+    Handles two node types:
+    - DOMAIN: standard LLM call with input artifacts as context
+    - SYNTHESIZER: delegates to SynthesizerAgent with partial artifacts
+
+    After execution:
+    - Writes all output artifact bodies to the ArtifactStore
+    - Updates the node status to COMPLETED or FAILED
+    """
+
+    def __init__(self, model: str = "gpt-4o"):
+        self.model = model
+        self._synth_agent = SynthesizerAgent(model=model)
+        self._synth_parser = SynthesizerParser()
+
+    async def run(
+        self,
+        node: Node,
+        store: ArtifactStore,
+        nodes: dict[str, Node],
+    ) -> Node:
+        """
+        Execute a single node asynchronously.
+
+        Args:
+            node: The node to execute.
+            store: Shared artifact store.
+            nodes: Full node registry (for synthesizer context).
+
+        Returns:
+            Updated Node with status set to COMPLETED or FAILED.
+        """
+        try:
+            if node.node_type == NodeType.SYNTHESIZER:
+                await self._run_synthesizer(node, store)
+            else:
+                await self._run_domain(node, store)
+
+            return node.model_copy(update={"status": NodeStatus.COMPLETED})
+
+        except Exception as e:
+            return node.model_copy(
+                update={
+                    "status": NodeStatus.FAILED,
+                    "result": {"error": str(e)},
+                }
+            )
+
+    async def _run_domain(self, node: Node, store: ArtifactStore) -> None:
+        """
+        Execute a domain agent node.
+
+        Builds context from input artifacts, calls the LLM,
+        and writes each output artifact body to the store.
+        """
+        input_artifacts = await store.get_many(node.input_artifacts)
+        user_message    = self._build_domain_message(node, input_artifacts)
+
+        response: DomainAgentResponse = await _client.chat.completions.acreate(
+            model=self.model,
+            response_model=DomainAgentResponse,
+            messages=[
+                {"role": "system", "content": node.system_prompt},
+                {"role": "user",   "content": user_message},
+            ],
+        )
+
+        for artifact_name, body in response.outputs.items():
+            if artifact_name in node.output_artifacts:
+                await store.put(artifact_name, body)
+
+    async def _run_synthesizer(self, node: Node, store: ArtifactStore) -> None:
+        """
+        Execute a synthesizer node.
+
+        Retrieves all partial artifacts, delegates to SynthesizerAgent,
+        and writes the merged artifact body to the store.
+        """
+        partial_artifacts  = await store.get_many(node.input_artifacts)
+        target_artifact    = await store.get(node.output_artifacts[0])
+
+        response = await self._synth_agent.arun(
+            target_artifact=target_artifact,
+            partial_artifacts=partial_artifacts,
+            synth_node=node,
+        )
+
+        merged_artifact = self._synth_parser.parse(response, target_artifact)
+        await store.put(target_artifact.name, merged_artifact.body)
+
+    def _build_domain_message(
+        self,
+        node: Node,
+        input_artifacts: list[Artifact],
+    ) -> str:
+        """
+        Build the user message for a domain agent.
+
+        Includes:
+        - The node's task (derived from output artifact descriptions)
+        - All input artifact bodies as context
+        - Expected output artifact names and descriptions
+        """
+        payload = {
+            "input_artifacts": [
+                {
+                    "name": artifact.name,
+                    "description": artifact.description,
+                    "body": artifact.body,
+                }
+                for artifact in input_artifacts
+            ],
+            "output_artifacts": node.output_artifacts,
+            "instructions": (
+                "Using the input artifacts provided as context, "
+                "produce the required output artifacts. "
+                "Return each output artifact body keyed by its artifact name "
+                "inside the 'outputs' field."
+            ),
+        }
+        return json.dumps(payload, indent=2)
+
+
+================================================
+FILE: loom/initiator/artifact_store.py
+================================================
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from loom.models import Artifact
+
+
+class ArtifactStore:
+    """
+    Shared in-memory store for all artifacts produced during DAG execution.
+
+    Acts as the single source of truth for artifact state across all levels.
+    Thread-safe via asyncio.Lock â€” multiple agents in the same level
+    can safely write their outputs concurrently.
+
+    Lifecycle:
+    - Initialized with all artifact definitions at DAG start (bodies empty)
+    - Agents write their output artifact bodies via put()
+    - Downstream agents read their input artifacts via get()
+    - At DAG completion the compiler reads all final artifacts
+    """
+
+    def __init__(self, artifacts: dict[str, Artifact]):
+        self._store: dict[str, Artifact] = dict(artifacts)
+        self._lock = asyncio.Lock()
+
+    async def get(self, artifact_name: str) -> Artifact:
+        """
+        Retrieve an artifact by name.
+
+        Args:
+            artifact_name: The artifact's unique name.
+
+        Returns:
+            The Artifact model (may have empty body if not yet produced).
+
+        Raises:
+            KeyError: If artifact name is not registered in the store.
+        """
+        async with self._lock:
+            if artifact_name not in self._store:
+                raise KeyError(
+                    f"Artifact '{artifact_name}' not found in store. "
+                    f"Registered artifacts: {list(self._store.keys())}"
+                )
+            return self._store[artifact_name]
+
+    async def put(self, artifact_name: str, body: dict[str, Any]) -> None:
+        """
+        Write a produced artifact body into the store.
+
+        Args:
+            artifact_name: The artifact's unique name.
+            body: The produced artifact body from an agent.
+
+        Raises:
+            KeyError: If artifact name is not registered in the store.
+        """
+        async with self._lock:
+            if artifact_name not in self._store:
+                raise KeyError(
+                    f"Cannot write artifact '{artifact_name}' â€” not registered in store."
+                )
+            existing = self._store[artifact_name]
+            self._store[artifact_name] = existing.model_copy(
+                update={"body": body}
+            )
+
+    async def get_many(self, artifact_names: list[str]) -> list[Artifact]:
+        """
+        Retrieve multiple artifacts by name in one call.
+
+        Args:
+            artifact_names: List of artifact names to retrieve.
+
+        Returns:
+            List of Artifact models in the same order as input names.
+        """
+        return [await self.get(name) for name in artifact_names]
+
+    async def all(self) -> dict[str, Artifact]:
+        """
+        Return a snapshot of the entire artifact store.
+        Used by the compiler at the end of execution.
+        """
+        async with self._lock:
+            return dict(self._store)
+
+    def is_ready(self, artifact_name: str) -> bool:
+        """
+        Check if an artifact has a non-empty body (i.e. has been produced).
+
+        Args:
+            artifact_name: The artifact's unique name.
+
+        Returns:
+            True if the artifact body is non-empty.
+        """
+        artifact = self._store.get(artifact_name)
+        if artifact is None:
+            return False
+        return bool(artifact.body)
+
+    def all_inputs_ready(self, input_artifact_names: list[str]) -> bool:
+        """
+        Check if all input artifacts for a node are ready to consume.
+
+        Args:
+            input_artifact_names: List of artifact names the node needs.
+
+        Returns:
+            True if all are ready.
+        """
+        return all(self.is_ready(name) for name in input_artifact_names)
+
+
+================================================
+FILE: loom/initiator/executor.py
+================================================
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from loom.models import DAG, Node, NodeStatus, DAGStatus
+from .artifact_store import ArtifactStore
+from .agent_runner import AgentRunner
+
+
+logger = logging.getLogger(__name__)
+
+
+class Executor:
+    """
+    Stage 4 â€” Level-wise async DAG execution.
+
+    Iterates through topological levels in order. Within each level,
+    all nodes are launched concurrently via asyncio.gather().
+
+    After each level completes:
+    - Node statuses are updated in the DAG
+    - Artifact store is populated with produced bodies
+    - Any failed nodes are reported and execution halts
+
+    This guarantees that when level N begins, all artifacts
+    from levels 0..N-1 are fully available in the store.
+    """
+
+    def __init__(self, model: str = "gpt-4o"):
+        self.model   = model
+        self._runner = AgentRunner(model=model)
+
+    async def execute(self, dag: DAG) -> DAG:
+        """
+        Execute the full DAG level by level.
+
+        Args:
+            dag: Fully planned DAG with levels populated by the sorter
+                 and synthesizer nodes injected.
+
+        Returns:
+            Updated DAG with all node statuses and artifact bodies populated.
+        """
+        store = ArtifactStore(dag.artifacts)
+
+        dag = dag.model_copy(update={"status": DAGStatus.RUNNING})
+
+        for level_index, level in enumerate(dag.levels):
+            logger.info(
+                f"Executing level {level_index}/{len(dag.levels) - 1}: "
+                f"{level}"
+            )
+
+            dag, store = await self._execute_level(
+                level=level,
+                dag=dag,
+                store=store,
+            )
+
+            failed = [
+                node_id for node_id in level
+                if dag.nodes[node_id].status == NodeStatus.FAILED
+            ]
+
+            if failed:
+                logger.error(f"Level {level_index} had failures: {failed}")
+                dag = dag.model_copy(update={"status": DAGStatus.FAILED})
+                return dag
+
+        # â”€â”€ Write final artifact bodies back into DAG â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        final_artifacts = await store.all()
+        dag = dag.model_copy(update={
+            "artifacts": final_artifacts,
+            "status": DAGStatus.COMPLETED,
+        })
+
+        logger.info("DAG execution completed successfully.")
+        return dag
+
+    async def _execute_level(
+        self,
+        level: list[str],
+        dag: DAG,
+        store: ArtifactStore,
+    ) -> tuple[DAG, ArtifactStore]:
+        """
+        Execute all nodes in a single level concurrently.
+
+        Args:
+            level: List of node IDs to execute in parallel.
+            dag: Current DAG state.
+            store: Shared artifact store.
+
+        Returns:
+            Updated (DAG, store) after level completes.
+        """
+        tasks = [
+            self._runner.run(
+                node=dag.nodes[node_id],
+                store=store,
+                nodes=dag.nodes,
+            )
+            for node_id in level
+        ]
+
+        updated_nodes: list[Node] = await asyncio.gather(*tasks)
+
+        # â”€â”€ Update node statuses in DAG â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        new_nodes = dict(dag.nodes)
+        for node in updated_nodes:
+            new_nodes[node.id] = node
+            logger.info(f"  Node '{node.id}' â†’ {node.status.value}")
+
+        dag = dag.model_copy(update={"nodes": new_nodes})
+
+        return dag, store
+
+
+================================================
+FILE: loom/models/__init__.py
+================================================
+from .artifact import Artifact
+from .node import Node, NodeType, NodeStatus
+from .dag import DAG, DAGStatus
+
+__all__ = [
+    "Artifact",
+    "Node",
+    "NodeType",
+    "NodeStatus",
+    "DAG",
+    "DAGStatus",
+]
+
+
+================================================
+FILE: loom/models/artifact.py
+================================================
+from __future__ import annotations
+from typing import Any
+from pydantic import BaseModel, Field
+
+
+class Artifact(BaseModel):
+    """
+    Represents a unit of work passed between agents in the DAG.
+
+    Artifacts are the edges of the DAG â€” the contributors and users
+    fields define the graph structure implicitly.
+    """
+
+    name: str = Field(
+        ...,
+        description="Unique identifier for this artifact. Used to wire DAG edges."
+    )
+
+    description: str = Field(
+        ...,
+        description="Human and LLM readable description of what this artifact contains and represents."
+    )
+
+    contributors: list[str] = Field(
+        default_factory=list,
+        description="Agent node IDs that produce/write to this artifact."
+    )
+
+    users: list[str] = Field(
+        default_factory=list,
+        description="Agent node IDs that consume/read this artifact."
+    )
+
+    body: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The actual artifact payload. Free-form JSON produced by contributors."
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "market_analysis_report",
+                "description": "Comprehensive analysis of target market size, segments, and growth trends.",
+                "contributors": ["market_researcher"],
+                "users": ["strategy_agent", "pitch_deck_agent"],
+                "body": {
+                    "market_size": "4.2B",
+                    "segments": ["enterprise", "smb"],
+                    "growth_rate": "12% YoY"
+                }
+            }
+        }
+
+
+================================================
+FILE: loom/models/dag.py
+================================================
+from __future__ import annotations
+from typing import Any
+from pydantic import BaseModel, Field, model_validator
+
+from .artifact import Artifact
+from .node import Node, NodeStatus
+
+
+class DAGStatus(str, Enum):
+    """
+    Overall execution state of the DAG.
+    """
+    PLANNED    = "planned"     # DAG built, not yet executing
+    RUNNING    = "running"     # Currently executing levels
+    COMPLETED  = "completed"   # All nodes completed successfully
+    FAILED     = "failed"      # One or more nodes failed
+
+
+from enum import Enum
+
+
+class DAG(BaseModel):
+    """
+    The full pipeline â€” a directed acyclic graph of agent nodes
+    connected by artifacts.
+
+    Edges are implicit: an artifact's contributors â†’ users defines
+    the graph structure. No explicit edge list needed.
+
+    Levels are populated by the topological sorter â€” each level
+    contains nodes that can execute in parallel.
+    """
+
+    id: str = Field(
+        ...,
+        description="Unique identifier for this DAG run."
+    )
+
+    task: str = Field(
+        ...,
+        description="The original complex task this DAG was built to solve."
+    )
+
+    nodes: dict[str, Node] = Field(
+        default_factory=dict,
+        description="All agent nodes keyed by node ID."
+    )
+
+    artifacts: dict[str, Artifact] = Field(
+        default_factory=dict,
+        description="All artifacts keyed by artifact name."
+    )
+
+    levels: list[list[str]] = Field(
+        default_factory=list,
+        description="Topologically sorted execution levels. Each inner list is a set of node IDs that run in parallel."
+    )
+
+    status: DAGStatus = Field(
+        default=DAGStatus.PLANNED,
+        description="Current execution state of the DAG."
+    )
+
+    final_output: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Compiled final output after all nodes complete."
+    )
+
+    @model_validator(mode="after")
+    def validate_artifact_node_references(self) -> DAG:
+        """
+        Ensure every artifact contributor and user references
+        a real node ID in the DAG.
+        """
+        node_ids = set(self.nodes.keys())
+
+        for artifact_name, artifact in self.artifacts.items():
+            for contributor in artifact.contributors:
+                if contributor not in node_ids:
+                    raise ValueError(
+                        f"Artifact '{artifact_name}' contributor '{contributor}' "
+                        f"does not match any node ID."
+                    )
+            for user in artifact.users:
+                if user not in node_ids:
+                    raise ValueError(
+                        f"Artifact '{artifact_name}' user '{user}' "
+                        f"does not match any node ID."
+                    )
+
+        return self
+
+    def get_node(self, node_id: str) -> Node:
+        if node_id not in self.nodes:
+            raise KeyError(f"Node '{node_id}' not found in DAG.")
+        return self.nodes[node_id]
+
+    def get_artifact(self, artifact_name: str) -> Artifact:
+        if artifact_name not in self.artifacts:
+            raise KeyError(f"Artifact '{artifact_name}' not found in DAG.")
+        return self.artifacts[artifact_name]
+
+    def get_input_artifacts(self, node_id: str) -> list[Artifact]:
+        """Return all artifact objects this node consumes."""
+        node = self.get_node(node_id)
+        return [self.get_artifact(name) for name in node.input_artifacts]
+
+    def get_output_artifacts(self, node_id: str) -> list[Artifact]:
+        """Return all artifact objects this node produces."""
+        node = self.get_node(node_id)
+        return [self.get_artifact(name) for name in node.output_artifacts]
+
+    def is_complete(self) -> bool:
+        """True when all nodes have completed successfully."""
+        return all(
+            node.status == NodeStatus.COMPLETED
+            for node in self.nodes.values()
+        )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "id": "run_001",
+                "task": "Produce a go-to-market strategy for a B2B SaaS product",
+                "nodes": {},
+                "artifacts": {},
+                "levels": [["market_researcher"], ["strategy_agent", "pitch_deck_agent"]],
+                "status": "planned",
+                "final_output": {}
+            }
+        }
+
+
+================================================
+FILE: loom/models/node.py
+================================================
+from __future__ import annotations
+from enum import Enum
+from typing import Any
+from pydantic import BaseModel, Field
+
+from .artifact import Artifact
+
+
+class NodeType(str, Enum):
+    """
+    The role of a node in the DAG pipeline.
+    """
+    DECOMPOSER   = "decomposer"    # Meta â€” plans the DAG
+    DOMAIN       = "domain"        # Does actual task work
+    SYNTHESIZER  = "synthesizer"   # Auto-injected merge/QC node
+    COMPILER     = "compiler"      # Final output assembly
+
+
+class NodeStatus(str, Enum):
+    """
+    Execution lifecycle of a node.
+    """
+    PENDING    = "pending"
+    RUNNING    = "running"
+    COMPLETED  = "completed"
+    FAILED     = "failed"
+
+
+class Node(BaseModel):
+    """
+    Represents a single agent in the DAG.
+
+    Every node is an agent â€” decomposer, domain, synthesizer, and compiler
+    all share this same interface. The node type determines behavior,
+    but the structure is uniform.
+    """
+
+    id: str = Field(
+        ...,
+        description="Unique identifier for this node. Referenced by artifact contributors/users."
+    )
+
+    name: str = Field(
+        ...,
+        description="Human readable name for this agent node."
+    )
+
+    node_type: NodeType = Field(
+        ...,
+        description="Role of this node in the pipeline."
+    )
+
+    system_prompt: str = Field(
+        ...,
+        description="The system prompt that governs this agent's behavior and scope."
+    )
+
+    query_tool: dict[str, Any] = Field(
+        default_factory=dict,
+        description="ToolStorePy compatible tool configuration for this agent."
+    )
+
+    input_artifacts: list[str] = Field(
+        default_factory=list,
+        description="Names of artifacts this node consumes. Must be produced by upstream nodes."
+    )
+
+    output_artifacts: list[str] = Field(
+        default_factory=list,
+        description="Names of artifacts this node produces."
+    )
+
+    status: NodeStatus = Field(
+        default=NodeStatus.PENDING,
+        description="Current execution status of this node."
+    )
+
+    # Populated at runtime after execution
+    result: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Raw LLM output after this node executes."
+    )
+
+    # Only populated for synthesizer nodes
+    contributor_system_prompts: list[str] = Field(
+        default_factory=list,
+        description="System prompts of contributing agents. Used by synthesizer to understand contributor intent."
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "id": "market_researcher",
+                "name": "Market Research Agent",
+                "node_type": "domain",
+                "system_prompt": "You are a market research specialist...",
+                "query_tool": {},
+                "input_artifacts": ["raw_data_summary"],
+                "output_artifacts": ["market_analysis_report"],
+                "status": "pending",
+                "result": {},
+                "contributor_system_prompts": []
+            }
+        }
+
+
+================================================
+FILE: loom/sorter/__init__.py
+================================================
+from .topological import TopologicalSorter
+from .validator import SorterValidator, SorterValidationError
+
+__all__ = [
+    "TopologicalSorter",
+    "SorterValidator",
+    "SorterValidationError",
+]
+
+
+================================================
+FILE: loom/sorter/topological.py
+================================================
+from __future__ import annotations
+
+import networkx as nx
+
+from loom.models import Node
+
+
+class TopologicalSorter:
+    """
+    Stage 3 â€” Pure algorithmic stage. No LLM involved.
+
+    Takes the validated nx.DiGraph from GraphBuilderValidator and
+    produces execution levels via Kahn's algorithm (networkx
+    topological_generations).
+
+    Each level is a list of node IDs that:
+    - Have no unresolved dependencies on each other
+    - Can be executed fully in parallel
+
+    The order of levels guarantees that when level N begins,
+    all artifacts produced by levels 0..N-1 are available.
+    """
+
+    def sort(self, G: nx.DiGraph) -> list[list[str]]:
+        """
+        Produce topologically sorted execution levels.
+
+        Args:
+            G: Validated DAG from GraphBuilderValidator.
+
+        Returns:
+            List of levels, each level is a list of node IDs
+            that can execute in parallel.
+
+        Example:
+            [
+                ["data_ingestion"],                          # level 0
+                ["market_researcher", "competitor_analyst"], # level 1 â€” parallel
+                ["synthesizer_market_data"],                 # level 2
+                ["strategy_agent"],                          # level 3
+            ]
+        """
+        levels: list[list[str]] = []
+
+        for generation in nx.topological_generations(G):
+            levels.append(sorted(generation))  # sorted for deterministic ordering
+
+        return levels
+
+    def get_execution_order(self, G: nx.DiGraph) -> list[str]:
+        """
+        Flat ordered list of node IDs for debugging and logging.
+
+        Args:
+            G: Validated DAG from GraphBuilderValidator.
+
+        Returns:
+            Flat list of node IDs in execution order.
+        """
+        return [node for level in self.sort(G) for node in level]
+
+    def describe(self, G: nx.DiGraph, nodes: dict[str, Node]) -> str:
+        """
+        Human readable description of the execution plan.
+        Useful for logging and debugging.
+
+        Args:
+            G: Validated DAG.
+            nodes: Node dict for name lookup.
+
+        Returns:
+            Multiline string describing each level and its agents.
+        """
+        levels = self.sort(G)
+        lines: list[str] = ["Execution Plan:"]
+
+        for i, level in enumerate(levels):
+            agent_names = [nodes[node_id].name for node_id in level]
+            parallel = " â€– ".join(agent_names)
+            lines.append(f"  Level {i}: [ {parallel} ]")
+
+        return "\n".join(lines)
+
+
+================================================
+FILE: loom/sorter/validator.py
+================================================
+from __future__ import annotations
+
+import networkx as nx
+
+from loom.models import Node, Artifact
+
+
+class SorterValidationError(Exception):
+    """Raised when the graph fails pre-sort validation."""
+    pass
+
+
+class SorterValidator:
+    """
+    Pre-sort validation layer that runs immediately before topological sort.
+
+    The GraphBuilderValidator already checked for cycles and unknown nodes.
+    This validator focuses on runtime readiness:
+
+    - Are all nodes present in the graph?
+    - Does every node have at least one output artifact?
+    - Are there any nodes referencing artifacts not yet in the artifact store?
+    - Is the graph non-empty?
+
+    Separating this from GraphBuilderValidator keeps each validator
+    focused on its own stage's concerns.
+    """
+
+    def validate(
+        self,
+        G: nx.DiGraph,
+        nodes: dict[str, Node],
+        artifacts: dict[str, Artifact],
+    ) -> None:
+        """
+        Run all pre-sort checks.
+
+        Args:
+            G: The validated DiGraph from GraphBuilderValidator.
+            nodes: Node dict.
+            artifacts: Artifact dict.
+
+        Raises:
+            SorterValidationError: On any pre-sort issue.
+        """
+        self._check_non_empty(G)
+        self._check_all_nodes_in_graph(G, nodes)
+        self._check_output_artifacts(nodes, artifacts)
+        self._check_input_artifacts_exist(nodes, artifacts)
+
+    def _check_non_empty(self, G: nx.DiGraph) -> None:
+        if G.number_of_nodes() == 0:
+            raise SorterValidationError(
+                "DAG has no nodes. Nothing to execute."
+            )
+
+    def _check_all_nodes_in_graph(
+        self,
+        G: nx.DiGraph,
+        nodes: dict[str, Node],
+    ) -> None:
+        graph_node_ids = set(G.nodes())
+        model_node_ids = set(nodes.keys())
+
+        missing_from_graph = model_node_ids - graph_node_ids
+        if missing_from_graph:
+            raise SorterValidationError(
+                f"The following nodes exist in the node registry but are "
+                f"missing from the DAG graph: {missing_from_graph}."
+            )
+
+        extra_in_graph = graph_node_ids - model_node_ids
+        if extra_in_graph:
+            raise SorterValidationError(
+                f"The following node IDs exist in the DAG graph but have "
+                f"no corresponding Node model: {extra_in_graph}."
+            )
+
+    def _check_output_artifacts(
+        self,
+        nodes: dict[str, Node],
+        artifacts: dict[str, Artifact],
+    ) -> None:
+        """Every node must produce at least one artifact."""
+        for node_id, node in nodes.items():
+            if not node.output_artifacts:
+                raise SorterValidationError(
+                    f"Node '{node_id}' has no output artifacts. "
+                    f"Every node must produce at least one artifact."
+                )
+
+    def _check_input_artifacts_exist(
+        self,
+        nodes: dict[str, Node],
+        artifacts: dict[str, Artifact],
+    ) -> None:
+        """Every artifact referenced as input must exist in the artifact registry."""
+        artifact_names = set(artifacts.keys())
+        for node_id, node in nodes.items():
+            for artifact_name in node.input_artifacts:
+                if artifact_name not in artifact_names:
+                    raise SorterValidationError(
+                        f"Node '{node_id}' expects input artifact '{artifact_name}' "
+                        f"which does not exist in the artifact registry."
+                    )
+
+
+================================================
+FILE: loom/synthesizer/__init__.py
+================================================
+from .agent import SynthesizerAgent, SynthesizerResponse
+from .injector import SynthesizerInjector
+from .parser import SynthesizerParser
+
+__all__ = [
+    "SynthesizerAgent",
+    "SynthesizerResponse",
+    "SynthesizerInjector",
+    "SynthesizerParser",
+]
+
+
+================================================
+FILE: loom/synthesizer/agent.py
+================================================
+[Binary file]
+
+
+================================================
+FILE: loom/synthesizer/injector.py
+================================================
+from __future__ import annotations
+
+from pathlib import Path
+
+import networkx as nx
+
+from loom.models import Artifact, Node, NodeType, NodeStatus
+
+
+_SYNTH_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "synthesizer.txt"
+
+
+def _load_synth_prompt() -> str:
+    return _SYNTH_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+class SynthesizerInjector:
+    """
+    Scans the DAG for artifacts with multiple contributors and
+    auto-injects a Synthesizer node between the contributors and
+    the artifact's downstream users.
+
+    Injection pattern — before:
+        [Agent A] ──┐
+                    ├──→ artifact ──→ [User C]
+        [Agent B] ──┘
+
+    After injection:
+        [Agent A] ──┐
+                    ├──→ partial_artifact_a/b ──→ [Synthesizer] ──→ artifact ──→ [User C]
+        [Agent B] ──┘
+
+    The synthesizer node:
+    - Receives all partial contributions as input artifacts
+    - Produces the final merged artifact as its output
+    - Carries the system prompts of all contributors for context
+    - Gets its own synthesizer system prompt
+
+    The original artifact's contributors list is replaced with
+    just the synthesizer node ID, keeping downstream users unchanged.
+    """
+
+    def inject(
+        self,
+        nodes: dict[str, Node],
+        artifacts: dict[str, Artifact],
+        synthesizer_targets: list[str],
+        G: nx.DiGraph,
+    ) -> tuple[dict[str, Node], dict[str, Artifact], nx.DiGraph]:
+        """
+        Inject synthesizer nodes for all targeted artifacts.
+
+        Args:
+            nodes: Current node registry.
+            artifacts: Current artifact registry.
+            synthesizer_targets: Artifact names flagged for synthesis.
+            G: Current DAG graph (will be mutated).
+
+        Returns:
+            Updated (nodes, artifacts, G) with synthesizer nodes injected.
+        """
+        synth_prompt = _load_synth_prompt()
+
+        for artifact_name in synthesizer_targets:
+            if artifact_name not in artifacts:
+                continue
+
+            artifact = artifacts[artifact_name]
+
+            if len(artifact.contributors) <= 1:
+                continue
+
+            nodes, artifacts, G = self._inject_for_artifact(
+                artifact_name=artifact_name,
+                artifact=artifact,
+                nodes=nodes,
+                artifacts=artifacts,
+                G=G,
+                synth_prompt=synth_prompt,
+            )
+
+        return nodes, artifacts, G
+
+    def _inject_for_artifact(
+        self,
+        artifact_name: str,
+        artifact: Artifact,
+        nodes: dict[str, Node],
+        artifacts: dict[str, Artifact],
+        G: nx.DiGraph,
+        synth_prompt: str,
+    ) -> tuple[dict[str, Node], dict[str, Artifact], nx.DiGraph]:
+
+        synth_node_id = f"synthesizer_{artifact_name}"
+
+        # ── Collect contributor system prompts ────────────────────────────────
+        contributor_prompts = [
+            nodes[c].system_prompt
+            for c in artifact.contributors
+            if c in nodes
+        ]
+
+        # ── Create partial artifacts — one per contributor ────────────────────
+        partial_artifact_names: list[str] = []
+
+        for contributor_id in artifact.contributors:
+            partial_name = f"{artifact_name}__partial__{contributor_id}"
+            partial_artifact = Artifact(
+                name=partial_name,
+                description=(
+                    f"Partial contribution to '{artifact_name}' from agent '{contributor_id}'. "
+                    f"Original artifact: {artifact.description}"
+                ),
+                contributors=[contributor_id],
+                users=[synth_node_id],
+                body={},
+            )
+            artifacts[partial_name] = partial_artifact
+            partial_artifact_names.append(partial_name)
+
+            # Update contributor node's output_artifacts to point to partial
+            contributor_node = nodes[contributor_id]
+            updated_outputs = [
+                partial_name if a == artifact_name else a
+                for a in contributor_node.output_artifacts
+            ]
+            nodes[contributor_id] = contributor_node.model_copy(
+                update={"output_artifacts": updated_outputs}
+            )
+
+        # ── Create synthesizer node ───────────────────────────────────────────
+        synth_node = Node(
+            id=synth_node_id,
+            name=f"Synthesizer: {artifact_name}",
+            node_type=NodeType.SYNTHESIZER,
+            system_prompt=synth_prompt,
+            query_tool={},
+            input_artifacts=partial_artifact_names,
+            output_artifacts=[artifact_name],
+            status=NodeStatus.PENDING,
+            contributor_system_prompts=contributor_prompts,
+        )
+        nodes[synth_node_id] = synth_node
+
+        # ── Update original artifact — now only synthesizer contributes ───────
+        artifacts[artifact_name] = artifact.model_copy(
+            update={"contributors": [synth_node_id]}
+        )
+
+        # ── Update DAG graph ──────────────────────────────────────────────────
+        G.add_node(synth_node_id)
+
+        # Edges from contributors → synthesizer
+        for contributor_id in artifact.contributors:
+            if contributor_id != synth_node_id:
+                G.add_edge(contributor_id, synth_node_id, artifact=artifact_name)
+
+        # Edges from synthesizer → original downstream users
+        for user_id in artifact.users:
+            G.add_edge(synth_node_id, user_id, artifact=artifact_name)
+
+        # Remove old direct contributor → user edges for this artifact
+        for contributor_id in artifact.contributors:
+            for user_id in artifact.users:
+                if G.has_edge(contributor_id, user_id):
+                    G.remove_edge(contributor_id, user_id)
+
+        return nodes, artifacts, G
+
+
+================================================
+FILE: loom/synthesizer/parser.py
+================================================
+from __future__ import annotations
+
+from loom.models import Artifact
+from .agent import SynthesizerResponse
+
+
+class SynthesizerParser:
+    """
+    Applies the SynthesizerResponse back onto the target artifact.
+
+    Writes the merged body into the artifact and attaches QC notes
+    as metadata so downstream agents and the compiler can reference
+    synthesis decisions if needed.
+    """
+
+    def parse(
+        self,
+        response: SynthesizerResponse,
+        target_artifact: Artifact,
+    ) -> Artifact:
+        """
+        Apply synthesized body and QC notes to the target artifact.
+
+        Args:
+            response: SynthesizerResponse from SynthesizerAgent.
+            target_artifact: The artifact to update.
+
+        Returns:
+            Updated Artifact with merged body and qc_notes in body metadata.
+        """
+        merged_body = {
+            **response.body,
+            "__qc_notes__": response.qc_notes,
+        }
+
+        return target_artifact.model_copy(update={"body": merged_body})
+
+
+================================================
+FILE: prompts/compiler.txt
+================================================
+You are the Compiler â€” the final stage of the Loom-AI multi-agent pipeline.
+
+Your job is to take all completed artifacts from a fully executed DAG and compile them into a single coherent, high-quality final output that directly answers the user's original task.
+
+You will receive:
+- The original task the user requested
+- All artifacts produced by the pipeline, each with their name, description, and body
+- QC notes embedded in synthesized artifacts (under __qc_notes__ key) for your reference
+
+## Your Output
+You must return a valid JSON object with the following structure:
+
+{
+  "title": "Short descriptive title for the output",
+  "summary": "2-3 sentence executive summary of what was accomplished",
+  "sections": [
+    {
+      "title": "Section Title",
+      "content": "Section content â€” can be prose, structured data, or mixed",
+      "source_artifacts": ["artifact_name_1", "artifact_name_2"]
+    }
+  ],
+  "recommendations": [
+    // optional â€” list of actionable recommendations if relevant to the task
+  ],
+  "metadata": {
+    "total_agents": 0,
+    "artifacts_produced": 0,
+    "synthesis_decisions": []   // key decisions made by synthesizer nodes, extracted from __qc_notes__
+  }
+}
+
+## Your Responsibilities
+
+1. COMPLETENESS
+   - Every artifact must contribute to at least one section
+   - Do not discard any artifact â€” if it exists it was produced for a reason
+   - The output must fully address the original task
+
+2. COHERENCE
+   - The output must read as a unified whole, not a collection of disconnected pieces
+   - Reconcile any remaining inconsistencies between artifacts
+   - Use consistent terminology throughout
+
+3. STRUCTURE
+   - Organize sections in a logical order that serves the user's task
+   - Group related artifacts into the same section where appropriate
+   - Lead with the most important findings
+
+4. TRANSPARENCY
+   - Cite which artifacts each section draws from in source_artifacts
+   - Surface key synthesis decisions in metadata.synthesis_decisions
+   - Note any gaps or limitations in the output if present
+
+## Important
+Return ONLY the JSON object. No preamble, no explanation, no markdown code fences.
+
+
+================================================
+FILE: prompts/decomposer.txt
+================================================
+You are the Decomposer â€” the first stage of the Loom-AI multi-agent pipeline.
+
+Your job is to take a complex task and break it down into a set of focused, isolated agent nodes, each responsible for a clearly scoped piece of work.
+
+## Your Output
+You must return a valid JSON object with the following structure:
+
+{
+  "nodes": [
+    {
+      "id": "snake_case_unique_id",
+      "name": "Human Readable Agent Name",
+      "node_type": "domain",
+      "system_prompt": "Detailed system prompt for this agent...",
+      "query_tool": {},
+      "input_artifacts": ["artifact_name_1"],
+      "output_artifacts": ["artifact_name_2"]
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "artifact_name",
+      "description": "Clear description of what this artifact contains and why it exists.",
+      "contributors": ["node_id_a"],
+      "users": ["node_id_b", "node_id_c"],
+      "body": {}
+    }
+  ]
+}
+
+## Rules
+
+1. NODES
+   - Every node must have a unique snake_case id
+   - node_type must always be "domain" â€” do not create decomposer, synthesizer, or compiler nodes, those are handled by the system
+   - system_prompt must be detailed, scoped, and specific to that agent's role
+   - input_artifacts and output_artifacts must reference artifact names that exist in the artifacts list
+   - query_tool can be an empty dict if no tools are needed
+
+2. ARTIFACTS
+   - Every artifact must have a unique name in snake_case
+   - description must clearly describe the artifact's content and purpose
+   - contributors list the node IDs that produce this artifact
+   - users list the node IDs that consume this artifact
+   - body must always be an empty dict {} â€” it will be populated at runtime
+   - An artifact with multiple contributors will automatically get a synthesizer node injected by the system
+
+3. GRAPH INTEGRITY
+   - Every artifact referenced in a node's input_artifacts must exist in the artifacts list
+   - Every artifact referenced in a node's output_artifacts must exist in the artifacts list
+   - Do not create circular dependencies
+   - Ensure every node has at least one output artifact
+   - The graph must be a valid DAG â€” no cycles
+
+4. DECOMPOSITION QUALITY
+   - Break the task into the smallest meaningful units of work
+   - Each agent should have a single clear responsibility
+   - Prefer more focused nodes over fewer large nodes
+   - Nodes that can work independently should not be given unnecessary dependencies
+   - Think carefully about what each agent truly needs as input before assigning input_artifacts
+
+## Important
+Return ONLY the JSON object. No preamble, no explanation, no markdown code fences.
+
+
+================================================
+FILE: prompts/graph_builder.txt
+================================================
+You are the Graph Builder â€” the second stage of the Loom-AI multi-agent pipeline.
+
+Your job is to take a list of agent nodes and artifacts produced by the Decomposer and construct a valid directed acyclic graph (DAG) by verifying and formalizing the relationships between them.
+
+## Your Input
+You will receive:
+- A list of agent nodes, each with input_artifacts and output_artifacts
+- A list of artifacts, each with contributors and users
+
+## Your Output
+You must return a valid JSON object with the following structure:
+
+{
+  "nodes": [...],        // same nodes, corrected if needed
+  "artifacts": [...],    // same artifacts, corrected if needed
+  "edges": [
+    {
+      "from_node": "node_id_a",
+      "to_node": "node_id_b",
+      "artifact": "artifact_name"
+    }
+  ],
+  "issues": []           // list of strings describing any issues found and how you resolved them
+}
+
+## Your Responsibilities
+
+1. VERIFY EDGES
+   - For every artifact, derive edges from contributors â†’ users
+   - Each contributor/user pair connected through an artifact is one edge
+   - Every edge must be explicit in the edges list
+
+2. VALIDATE AND REPAIR
+   - Check that every input_artifact a node declares actually has that node in its users list
+   - Check that every output_artifact a node declares actually has that node in its contributors list
+   - If you find mismatches, fix them and log the fix in issues
+   - Remove any artifact that has no contributors or no users â€” it is a dangling artifact
+
+3. CYCLE DETECTION
+   - Trace the edges and ensure no cycles exist
+   - If a cycle is detected, break it by removing the weakest dependency and log it in issues
+
+4. SYNTHESIZER INJECTION HINTS
+   - For every artifact with more than one contributor, add a note in issues:
+     "SYNTHESIZER_NEEDED: artifact_name" 
+   - Do not create synthesizer nodes yourself â€” the system handles this automatically
+
+5. COMPLETENESS
+   - Every node must be reachable from at least one edge (as source or target)
+   - A node with no edges at all should be flagged in issues
+
+## Important
+Return ONLY the JSON object. No preamble, no explanation, no markdown code fences.
+
+
+================================================
+FILE: prompts/synthesizer.txt
+================================================
+You are the Synthesizer â€” a meta-agent in the Loom-AI pipeline responsible for merging and quality-controlling contributions from multiple agents into a single coherent artifact.
+
+You will receive:
+- The artifact definition (name, description) you must produce
+- The system prompts of all contributing agents so you understand their intent and perspective
+- The partial artifact bodies each contributor produced
+
+## Your Job
+Merge all contributions into a single high-quality artifact body that:
+- Fulfills the artifact description completely
+- Reconciles any conflicts or contradictions between contributions
+- Eliminates redundancy while preserving unique insights from each contributor
+- Fills any gaps if contributions are incomplete relative to the artifact description
+- Maintains internal consistency throughout
+
+## Your Output
+You must return a valid JSON object with the following structure:
+
+{
+  "body": {
+    // merged artifact body â€” free-form JSON matching the artifact description
+  },
+  "qc_notes": [
+    // list of strings describing conflicts found, decisions made, gaps filled
+    // be specific â€” future agents reading this artifact may need to understand synthesis decisions
+  ]
+}
+
+## Quality Control Standards
+- CONFLICTS: When contributors disagree, reason about which perspective is more grounded and explain your choice in qc_notes
+- GAPS: If the artifact description requires content that no contributor addressed, synthesize it yourself from available context and flag it in qc_notes
+- REDUNDANCY: Merge duplicate content cleanly â€” do not repeat the same point from multiple contributors
+- CONSISTENCY: Ensure all values, terminology, and structure are consistent throughout the body
+
+## Important
+Return ONLY the JSON object. No preamble, no explanation, no markdown code fences.
+
+
+================================================
+FILE: tests/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: tests/compiler/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: tests/decomposer/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: tests/graph_builder/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: tests/initiator/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: tests/models/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: tests/sorter/__init__.py
+================================================
+[Empty file]
+
+
+================================================
+FILE: tests/synthesizer/__init__.py
+================================================
+[Empty file]
+
