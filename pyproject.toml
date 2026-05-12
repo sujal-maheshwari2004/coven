@@ -1,9 +1,12 @@
 [project]
-name = "loom-ai"
+name = "coven"
 version = "0.1.0"
-description = "A multi-agent DAG pipeline framework that decomposes complex tasks into coordinated agents with real tool execution via ToolStorePy"
+description = "A multi-agent DAG pipeline framework that spawns and coordinates specialized agents to solve complex tasks — with real tool execution via ToolStorePy"
 readme = "README.md"
 requires-python = ">=3.12"
+authors = [
+    { name = "Sujal Maheshwari", email = "sujalmaheshwari07@gmail.com" }
+]
 dependencies = [
     "litellm>=1.40.0",
     "instructor>=1.3.0",
@@ -13,6 +16,10 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "toolstorepy>=0.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sujal-maheshwari2004/coven"
+Repository = "https://github.com/sujal-maheshwari2004/coven"
 
 [project.optional-dependencies]
 dev = [
@@ -26,7 +33,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["loom"]
+packages = ["coven"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

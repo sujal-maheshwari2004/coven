@@ -124,7 +124,7 @@ name = "loom-ai"
 version = "0.1.0"
 description = "A multi-agent DAG pipeline framework that decomposes complex tasks into coordinated agents with real tool execution via ToolStorePy"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "litellm>=1.40.0",
     "instructor>=1.3.0",
@@ -145,6 +145,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["loom"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -173,7 +176,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 ================================================
 FILE: .python-version
 ================================================
-3.11
+3.12
 
 
 
@@ -1468,10 +1471,15 @@ from __future__ import annotations
 
 import json
 import logging
-import tempfile
 from pathlib import Path
 
 from loom.models import Node
+
+# Import at module level so tests can patch "loom.mcp_builder.builder.ToolStorePy"
+try:
+    from toolstorepy import ToolStorePy
+except ImportError:  # allow loom to load even if toolstorepy isn't installed
+    ToolStorePy = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -1501,20 +1509,11 @@ class MCPNodeBuilder:
         install_requirements: bool = False,
         verbose: bool = False,
     ):
-        """
-        Args:
-            base_workspace: Root workspace for this DAG run.
-                            Node workspaces will be created as subdirectories.
-            index: ToolStorePy built-in index name (default: "core-tools").
-            index_url: Direct URL to a custom index archive. Overrides index.
-            install_requirements: Whether to install repo requirements in venv.
-            verbose: Enable verbose ToolStorePy logging.
-        """
-        self.base_workspace      = Path(base_workspace)
-        self.index               = index
-        self.index_url           = index_url
+        self.base_workspace       = Path(base_workspace)
+        self.index                = index
+        self.index_url            = index_url
         self.install_requirements = install_requirements
-        self.verbose             = verbose
+        self.verbose              = verbose
 
         self.base_workspace.mkdir(parents=True, exist_ok=True)
 
@@ -1529,12 +1528,15 @@ class MCPNodeBuilder:
             Path to mcp_unified_server.py, or None if node has no tool queries.
 
         Raises:
-            RuntimeError: If ToolStorePy build fails.
+            RuntimeError: If ToolStorePy is not installed or build fails.
         """
         if not node.query_tool:
             return None
 
-        from toolstorepy import ToolStorePy  # imported here so loom works without it if unused
+        if ToolStorePy is None:
+            raise RuntimeError(
+                "toolstorepy is not installed. Run: pip install toolstorepy"
+            )
 
         node_workspace = self.base_workspace / "mcp" / node.id
         node_workspace.mkdir(parents=True, exist_ok=True)
@@ -1574,16 +1576,6 @@ class MCPNodeBuilder:
     def _write_queries(self, node: Node, workspace: Path) -> Path:
         """
         Write node's query_tool list as a ToolStorePy-compatible queries.json.
-
-        Format:
-            [{"tool_description": "..."}]
-
-        Args:
-            node: Node whose query_tool to serialize.
-            workspace: Directory to write queries.json into.
-
-        Returns:
-            Path to written queries.json.
         """
         queries = [{"tool_description": tq.tool_description} for tq in node.query_tool]
         queries_path = workspace / "queries.json"
@@ -1621,7 +1613,7 @@ FILE: loom/models/artifact.py
 ================================================
 from __future__ import annotations
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Artifact(BaseModel):
@@ -1631,6 +1623,22 @@ class Artifact(BaseModel):
     Artifacts are the edges of the DAG â€” the contributors and users
     fields define the graph structure implicitly.
     """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "market_analysis_report",
+                "description": "Comprehensive analysis of target market size, segments, and growth trends.",
+                "contributors": ["market_researcher"],
+                "users": ["strategy_agent", "pitch_deck_agent"],
+                "body": {
+                    "market_size": "4.2B",
+                    "segments": ["enterprise", "smb"],
+                    "growth_rate": "12% YoY"
+                }
+            }
+        }
+    )
 
     name: str = Field(
         ...,
@@ -1657,21 +1665,6 @@ class Artifact(BaseModel):
         description="The actual artifact payload. Free-form JSON produced by contributors."
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "market_analysis_report",
-                "description": "Comprehensive analysis of target market size, segments, and growth trends.",
-                "contributors": ["market_researcher"],
-                "users": ["strategy_agent", "pitch_deck_agent"],
-                "body": {
-                    "market_size": "4.2B",
-                    "segments": ["enterprise", "smb"],
-                    "growth_rate": "12% YoY"
-                }
-            }
-        }
-
 
 ================================================
 FILE: loom/models/dag.py
@@ -1680,16 +1673,13 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .artifact import Artifact
 from .node import Node, NodeStatus
 
 
 class DAGStatus(str, Enum):
-    """
-    Overall execution state of the DAG.
-    """
     PLANNED    = "planned"
     RUNNING    = "running"
     COMPLETED  = "completed"
@@ -1708,15 +1698,23 @@ class DAG(BaseModel):
     contains nodes that can execute in parallel.
     """
 
-    id: str = Field(
-        ...,
-        description="Unique identifier for this DAG run."
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "id": "run_001",
+                "task": "Produce a go-to-market strategy for a B2B SaaS product",
+                "nodes": {},
+                "artifacts": {},
+                "levels": [["market_researcher"], ["strategy_agent", "pitch_deck_agent"]],
+                "status": "planned",
+                "final_output": {}
+            }
+        }
     )
 
-    task: str = Field(
-        ...,
-        description="The original complex task this DAG was built to solve."
-    )
+    id: str = Field(..., description="Unique identifier for this DAG run.")
+
+    task: str = Field(..., description="The original complex task this DAG was built to solve.")
 
     nodes: dict[str, Node] = Field(
         default_factory=dict,
@@ -1730,7 +1728,7 @@ class DAG(BaseModel):
 
     levels: list[list[str]] = Field(
         default_factory=list,
-        description="Topologically sorted execution levels. Each inner list is a set of node IDs that run in parallel."
+        description="Topologically sorted execution levels. Each inner list runs in parallel."
     )
 
     status: DAGStatus = Field(
@@ -1745,10 +1743,6 @@ class DAG(BaseModel):
 
     @model_validator(mode="after")
     def validate_artifact_node_references(self) -> DAG:
-        """
-        Ensure every artifact contributor and user references
-        a real node ID in the DAG.
-        """
         node_ids = set(self.nodes.keys())
 
         for artifact_name, artifact in self.artifacts.items():
@@ -1764,7 +1758,6 @@ class DAG(BaseModel):
                         f"Artifact '{artifact_name}' user '{user}' "
                         f"does not match any node ID."
                     )
-
         return self
 
     def get_node(self, node_id: str) -> Node:
@@ -1778,34 +1771,18 @@ class DAG(BaseModel):
         return self.artifacts[artifact_name]
 
     def get_input_artifacts(self, node_id: str) -> list[Artifact]:
-        """Return all artifact objects this node consumes."""
         node = self.get_node(node_id)
         return [self.get_artifact(name) for name in node.input_artifacts]
 
     def get_output_artifacts(self, node_id: str) -> list[Artifact]:
-        """Return all artifact objects this node produces."""
         node = self.get_node(node_id)
         return [self.get_artifact(name) for name in node.output_artifacts]
 
     def is_complete(self) -> bool:
-        """True when all nodes have completed successfully."""
         return all(
             node.status == NodeStatus.COMPLETED
             for node in self.nodes.values()
         )
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "id": "run_001",
-                "task": "Produce a go-to-market strategy for a B2B SaaS product",
-                "nodes": {},
-                "artifacts": {},
-                "levels": [["market_researcher"], ["strategy_agent", "pitch_deck_agent"]],
-                "status": "planned",
-                "final_output": {}
-            }
-        }
 
 
 ================================================
@@ -1814,13 +1791,10 @@ FILE: loom/models/node.py
 from __future__ import annotations
 from enum import Enum
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class NodeType(str, Enum):
-    """
-    The role of a node in the DAG pipeline.
-    """
     DECOMPOSER   = "decomposer"
     DOMAIN       = "domain"
     SYNTHESIZER  = "synthesizer"
@@ -1828,9 +1802,6 @@ class NodeType(str, Enum):
 
 
 class NodeStatus(str, Enum):
-    """
-    Execution lifecycle of a node.
-    """
     PENDING    = "pending"
     RUNNING    = "running"
     COMPLETED  = "completed"
@@ -1847,8 +1818,7 @@ class ToolQuery(BaseModel):
         ...,
         description=(
             "Plain English description of the tool this agent needs. "
-            "ToolStorePy uses this to semantically search and build the right MCP tool. "
-            "Example: 'evaluate a mathematical arithmetic expression securely'"
+            "ToolStorePy uses this to semantically search and build the right MCP tool."
         )
     )
 
@@ -1860,11 +1830,27 @@ class Node(BaseModel):
     Every node is an agent â€” decomposer, domain, synthesizer, and compiler
     all share this same interface. The node type determines behavior,
     but the structure is uniform.
-
-    query_tool: list of ToolQuery objects. If non-empty, ToolStorePy will
-    build an MCP server for this node before execution, giving the agent
-    access to real tool implementations matching each description.
     """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "id": "data_analyst",
+                "name": "Data Analysis Agent",
+                "node_type": "domain",
+                "system_prompt": "You are a data analyst...",
+                "query_tool": [
+                    {"tool_description": "preview rows and get summary statistics from a CSV file"},
+                ],
+                "input_artifacts": ["raw_dataset"],
+                "output_artifacts": ["analysis_report"],
+                "status": "pending",
+                "result": {},
+                "contributor_system_prompts": [],
+                "mcp_server_path": None,
+            }
+        }
+    )
 
     id: str = Field(
         ...,
@@ -1891,15 +1877,13 @@ class Node(BaseModel):
         description=(
             "List of tool descriptions for ToolStorePy. "
             "Each entry describes one tool this agent needs in plain English. "
-            "ToolStorePy will semantically search its index and build a real MCP server "
-            "with matching tool implementations before this node executes. "
             "Leave empty if the agent needs no external tools."
         )
     )
 
     input_artifacts: list[str] = Field(
         default_factory=list,
-        description="Names of artifacts this node consumes. Must be produced by upstream nodes."
+        description="Names of artifacts this node consumes."
     )
 
     output_artifacts: list[str] = Field(
@@ -1922,34 +1906,10 @@ class Node(BaseModel):
         description="System prompts of contributing agents. Used by synthesizer nodes."
     )
 
-    # Populated at runtime by MCPNodeBuilder if query_tool is non-empty
     mcp_server_path: str | None = Field(
         default=None,
-        description=(
-            "Absolute path to the ToolStorePy-built MCP server for this node. "
-            "Set at runtime. None if this node has no tool queries."
-        )
+        description="Absolute path to the ToolStorePy-built MCP server. Set at runtime."
     )
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "id": "data_analyst",
-                "name": "Data Analysis Agent",
-                "node_type": "domain",
-                "system_prompt": "You are a data analyst...",
-                "query_tool": [
-                    {"tool_description": "preview rows and get summary statistics from a CSV file"},
-                    {"tool_description": "calculate cryptographic hash of a file"},
-                ],
-                "input_artifacts": ["raw_dataset"],
-                "output_artifacts": ["analysis_report"],
-                "status": "pending",
-                "result": {},
-                "contributor_system_prompts": [],
-                "mcp_server_path": None,
-            }
-        }
 
 
 ================================================
@@ -2207,25 +2167,6 @@ class SynthesizerInjector:
     Scans the DAG for artifacts with multiple contributors and
     auto-injects a Synthesizer node between the contributors and
     the artifact's downstream users.
-
-    Injection pattern — before:
-        [Agent A] ──┐
-                    ├──→ artifact ──→ [User C]
-        [Agent B] ──┘
-
-    After injection:
-        [Agent A] ──┐
-                    ├──→ partial_artifact_a/b ──→ [Synthesizer] ──→ artifact ──→ [User C]
-        [Agent B] ──┘
-
-    The synthesizer node:
-    - Receives all partial contributions as input artifacts
-    - Produces the final merged artifact as its output
-    - Carries the system prompts of all contributors for context
-    - Gets its own synthesizer system prompt
-
-    The original artifact's contributors list is replaced with
-    just the synthesizer node ID, keeping downstream users unchanged.
     """
 
     def inject(
@@ -2235,18 +2176,6 @@ class SynthesizerInjector:
         synthesizer_targets: list[str],
         G: nx.DiGraph,
     ) -> tuple[dict[str, Node], dict[str, Artifact], nx.DiGraph]:
-        """
-        Inject synthesizer nodes for all targeted artifacts.
-
-        Args:
-            nodes: Current node registry.
-            artifacts: Current artifact registry.
-            synthesizer_targets: Artifact names flagged for synthesis.
-            G: Current DAG graph (will be mutated).
-
-        Returns:
-            Updated (nodes, artifacts, G) with synthesizer nodes injected.
-        """
         synth_prompt = _load_synth_prompt()
 
         for artifact_name in synthesizer_targets:
@@ -2281,14 +2210,12 @@ class SynthesizerInjector:
 
         synth_node_id = f"synthesizer_{artifact_name}"
 
-        # ── Collect contributor system prompts ────────────────────────────────
         contributor_prompts = [
             nodes[c].system_prompt
             for c in artifact.contributors
             if c in nodes
         ]
 
-        # ── Create partial artifacts — one per contributor ────────────────────
         partial_artifact_names: list[str] = []
 
         for contributor_id in artifact.contributors:
@@ -2306,7 +2233,6 @@ class SynthesizerInjector:
             artifacts[partial_name] = partial_artifact
             partial_artifact_names.append(partial_name)
 
-            # Update contributor node's output_artifacts to point to partial
             contributor_node = nodes[contributor_id]
             updated_outputs = [
                 partial_name if a == artifact_name else a
@@ -2316,13 +2242,13 @@ class SynthesizerInjector:
                 update={"output_artifacts": updated_outputs}
             )
 
-        # ── Create synthesizer node ───────────────────────────────────────────
+        # FIX: query_tool=[] not query_tool={} â€” Node.query_tool is list[ToolQuery]
         synth_node = Node(
             id=synth_node_id,
             name=f"Synthesizer: {artifact_name}",
             node_type=NodeType.SYNTHESIZER,
             system_prompt=synth_prompt,
-            query_tool={},
+            query_tool=[],
             input_artifacts=partial_artifact_names,
             output_artifacts=[artifact_name],
             status=NodeStatus.PENDING,
@@ -2330,24 +2256,19 @@ class SynthesizerInjector:
         )
         nodes[synth_node_id] = synth_node
 
-        # ── Update original artifact — now only synthesizer contributes ───────
         artifacts[artifact_name] = artifact.model_copy(
             update={"contributors": [synth_node_id]}
         )
 
-        # ── Update DAG graph ──────────────────────────────────────────────────
         G.add_node(synth_node_id)
 
-        # Edges from contributors → synthesizer
         for contributor_id in artifact.contributors:
             if contributor_id != synth_node_id:
                 G.add_edge(contributor_id, synth_node_id, artifact=artifact_name)
 
-        # Edges from synthesizer → original downstream users
         for user_id in artifact.users:
             G.add_edge(synth_node_id, user_id, artifact=artifact_name)
 
-        # Remove old direct contributor → user edges for this artifact
         for contributor_id in artifact.contributors:
             for user_id in artifact.users:
                 if G.has_edge(contributor_id, user_id):
