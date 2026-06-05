@@ -1,6 +1,6 @@
 [project]
-name = "coven"
-version = "0.1.0"
+name = "coven-ai"
+version = "0.2.0"
 description = "A multi-agent DAG pipeline framework that spawns and coordinates specialized agents to solve complex tasks — with real tool execution via ToolStorePy"
 readme = "README.md"
 requires-python = ">=3.12"
