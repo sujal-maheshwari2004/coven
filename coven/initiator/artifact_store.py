@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from loom.models import Artifact
+from coven.models import Artifact
 
 
 class ArtifactStore:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from loom.models import Artifact
+from coven.models import Artifact
 from .agent import SynthesizerResponse
 
 

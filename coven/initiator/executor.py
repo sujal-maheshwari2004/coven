@@ -4,8 +4,8 @@ import asyncio
 import logging
 from pathlib import Path
 
-from loom.models import DAG, Node, NodeStatus, DAGStatus
-from loom.mcp_builder import MCPNodeBuilder
+from coven.models import DAG, Node, NodeStatus, DAGStatus
+from coven.mcp_builder import MCPNodeBuilder
 from .artifact_store import ArtifactStore
 from .agent_runner import AgentRunner
 

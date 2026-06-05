@@ -8,10 +8,10 @@ No LLM calls.
 import pytest
 import networkx as nx
 
-from loom.synthesizer.injector import SynthesizerInjector
-from loom.synthesizer.parser import SynthesizerParser
-from loom.synthesizer.agent import SynthesizerResponse
-from loom.models import Node, NodeType, NodeStatus, Artifact
+from coven.synthesizer.injector import SynthesizerInjector
+from coven.synthesizer.parser import SynthesizerParser
+from coven.synthesizer.agent import SynthesizerResponse
+from coven.models import Node, NodeType, NodeStatus, Artifact
 
 
 # ─────────────────────────────────────────────────────────────

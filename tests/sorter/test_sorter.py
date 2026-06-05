@@ -8,9 +8,9 @@ Pure algorithmic — no LLM calls.
 import pytest
 import networkx as nx
 
-from loom.sorter.topological import TopologicalSorter
-from loom.sorter.validator import SorterValidator, SorterValidationError
-from loom.models import Node, NodeType, NodeStatus, Artifact
+from coven.sorter.topological import TopologicalSorter
+from coven.sorter.validator import SorterValidator, SorterValidationError
+from coven.models import Node, NodeType, NodeStatus, Artifact
 
 
 # ─────────────────────────────────────────────────────────────

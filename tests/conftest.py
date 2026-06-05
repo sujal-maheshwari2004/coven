@@ -1,11 +1,11 @@
 """
 tests/conftest.py
 
-Shared pytest fixtures for loom-ai test suite.
+Shared pytest fixtures for Coven test suite.
 """
 
 import pytest
-from loom.models import Artifact, Node, NodeType, NodeStatus, DAG
+from coven.models import Artifact, Node, NodeType, NodeStatus, DAG
 
 
 @pytest.fixture

@@ -4,22 +4,22 @@ import logging
 import uuid
 from pathlib import Path
 
-from loom.models import DAG, DAGStatus
-from loom.decomposer import DecomposerAgent, DecomposerParser
-from loom.graph_builder import GraphBuilderAgent, GraphBuilderParser, GraphBuilderValidator
-from loom.sorter import TopologicalSorter, SorterValidator
-from loom.synthesizer import SynthesizerInjector
-from loom.mcp_builder import MCPNodeBuilder
-from loom.initiator import Executor
-from loom.compiler import CompilerAgent, CompilerFormatter, CompilerResponse, OutputSection
+from coven.models import DAG, DAGStatus
+from coven.decomposer import DecomposerAgent, DecomposerParser
+from coven.graph_builder import GraphBuilderAgent, GraphBuilderParser, GraphBuilderValidator
+from coven.sorter import TopologicalSorter, SorterValidator
+from coven.synthesizer import SynthesizerInjector
+from coven.mcp_builder import MCPNodeBuilder
+from coven.initiator import Executor
+from coven.compiler import CompilerAgent, CompilerFormatter, CompilerResponse, OutputSection
 
 
 logger = logging.getLogger(__name__)
 
 
-class Loom:
+class Coven:
     """
-    Top-level orchestrator for the Loom-AI pipeline.
+    Top-level orchestrator for the Coven pipeline.
 
     Runs all five stages in sequence:
         1. Decomposer     — breaks task into nodes + artifacts
@@ -30,24 +30,28 @@ class Loom:
         5. Compiler       — assembles final output from all artifacts
 
     Usage:
-        loom = Loom(model="gpt-4o")
-        dag  = await loom.run("Produce a go-to-market strategy for a B2B SaaS product")
-        print(loom.to_text(dag))
+        coven = Coven(model="gpt-4o")
+        dag  = await coven.run("Produce a go-to-market strategy for a B2B SaaS product")
+        print(coven.to_text(dag))
 
     Tool usage:
         Nodes whose query_tool list is non-empty will have a ToolStorePy MCP
         server built for them automatically before execution. The decomposer
         LLM decides which tools each node needs — just describe the task and
-        loom handles the rest.
+        Coven handles the rest.
     """
 
     def __init__(
         self,
         model: str = "gpt-4o",
-        workspace: str | Path = "loom_workspace",
+        workspace: str | Path = "coven_workspace",
         mcp_index: str | None = "core-tools",
         mcp_index_url: str | None = None,
         mcp_install_requirements: bool = False,
+        mcp_host: str = "0.0.0.0",
+        mcp_base_port: int = 8100,
+        mcp_llm_scan: bool = False,
+        mcp_llm_model: str = "claude-sonnet-4-6",
         mcp_verbose: bool = False,
     ):
         """
@@ -57,6 +61,10 @@ class Loom:
             mcp_index: ToolStorePy built-in index name. Default: "core-tools".
             mcp_index_url: Direct URL to a custom ToolStorePy index. Overrides mcp_index.
             mcp_install_requirements: Install repo requirements in MCP venv.
+            mcp_host: Host MCP servers bind on. Default: "0.0.0.0".
+            mcp_base_port: Starting port for MCP servers; each node gets the next port.
+            mcp_llm_scan: Use an LLM to review each tool repo autonomously (no human prompt).
+            mcp_llm_model: Model for LLM security scanning. Any LiteLLM/LangChain string.
             mcp_verbose: Enable verbose ToolStorePy logging.
         """
         self.model     = model
@@ -68,6 +76,10 @@ class Loom:
             index=mcp_index if not mcp_index_url else None,
             index_url=mcp_index_url,
             install_requirements=mcp_install_requirements,
+            host=mcp_host,
+            base_port=mcp_base_port,
+            llm_scan=mcp_llm_scan,
+            llm_model=mcp_llm_model,
             verbose=mcp_verbose,
         )
 
@@ -86,7 +98,7 @@ class Loom:
 
     async def run(self, task: str) -> DAG:
         """
-        Execute the full Loom pipeline for a given task.
+        Execute the full Coven pipeline for a given task.
 
         Args:
             task: The complex task to solve.
@@ -95,7 +107,7 @@ class Loom:
             Completed DAG with final_output populated.
         """
         dag_id = str(uuid.uuid4())[:8]
-        logger.info(f"[{dag_id}] Starting Loom pipeline: {task[:80]}...")
+        logger.info(f"[{dag_id}] Starting Coven pipeline: {task[:80]}...")
 
         # ── Stage 1: Decompose ────────────────────────────────────────────────
         logger.info(f"[{dag_id}] Stage 1: Decomposing task...")

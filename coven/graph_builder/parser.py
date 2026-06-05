@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from loom.models import Artifact, Node, NodeType, NodeStatus
+from coven.models import Artifact, Node, NodeType, NodeStatus
 from .agent import GraphBuilderResponse, Edge
 
 

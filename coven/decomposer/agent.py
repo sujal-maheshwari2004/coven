@@ -6,7 +6,7 @@ import instructor
 from litellm import completion
 from pydantic import BaseModel
 
-from loom.models.node import ToolQuery
+from coven.models.node import ToolQuery
 
 
 # ── Instructor client ─────────────────────────────────────────────────────────

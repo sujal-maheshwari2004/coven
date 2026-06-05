@@ -8,10 +8,10 @@ import instructor
 from litellm import completion
 from pydantic import BaseModel
 
-from loom.models import Node, NodeType, NodeStatus, Artifact
-from loom.mcp_builder import MCPNodeBuilder
+from coven.models import Node, NodeType, NodeStatus, Artifact
+from coven.mcp_builder import MCPNodeBuilder
 from .artifact_store import ArtifactStore
-from loom.synthesizer import SynthesizerAgent, SynthesizerParser
+from coven.synthesizer import SynthesizerAgent, SynthesizerParser
 
 
 logger = logging.getLogger(__name__)
@@ -81,13 +81,15 @@ class AgentRunner:
         try:
             # ── Build MCP server if node has tool queries ─────────────────────
             if node.query_tool and self._mcp_builder:
-                mcp_path = self._mcp_builder.build_for_node(node)
-                if mcp_path:
-                    node = node.model_copy(
-                        update={"mcp_server_path": str(mcp_path)}
-                    )
+                result = self._mcp_builder.build_for_node(node)
+                if result:
+                    node = node.model_copy(update={
+                        "mcp_server_path": str(result.path),
+                        "mcp_server_port": result.port,
+                    })
                     logger.info(
-                        f"Node '{node.id}' MCP server ready → {mcp_path}"
+                        f"Node '{node.id}' MCP server ready → {result.path} "
+                        f"(port={result.port})"
                     )
 
             # ── Execute node ──────────────────────────────────────────────────
@@ -185,14 +187,15 @@ class AgentRunner:
         if node.mcp_server_path and node.query_tool:
             payload["mcp_tools"] = {
                 "server_path": node.mcp_server_path,
+                "server_port": node.mcp_server_port,
                 "available_tools": [
                     tq.tool_description for tq in node.query_tool
                 ],
                 "instructions": (
                     "A ToolStorePy MCP server has been built for you and is available "
-                    "at the path above. It contains real implementations of the tools "
-                    "listed in 'available_tools'. Use these tools to complete your task "
-                    "rather than relying on simulated outputs."
+                    "at the path above. Start it with `python <server_path>` — it will "
+                    "listen on the port in 'server_port' using streamable-http transport. "
+                    "Use these tools to complete your task rather than relying on simulated outputs."
                 ),
             }
 

@@ -8,10 +8,10 @@ No LLM calls.
 import pytest
 import networkx as nx
 
-from loom.graph_builder.agent import GraphBuilderResponse, Edge
-from loom.graph_builder.parser import GraphBuilderParser
-from loom.graph_builder.validator import GraphBuilderValidator, GraphValidationError
-from loom.models import Node, NodeType, NodeStatus, Artifact
+from coven.graph_builder.agent import GraphBuilderResponse, Edge
+from coven.graph_builder.parser import GraphBuilderParser
+from coven.graph_builder.validator import GraphBuilderValidator, GraphValidationError
+from coven.models import Node, NodeType, NodeStatus, Artifact
 
 
 # ─────────────────────────────────────────────────────────────

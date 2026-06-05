@@ -6,9 +6,9 @@ No LLM calls — all inputs are hand-crafted DecomposerResponse objects.
 """
 
 import pytest
-from loom.decomposer.agent import DecomposerResponse, DecomposedNode, DecomposedArtifact
-from loom.decomposer.parser import DecomposerParser
-from loom.models import NodeType, NodeStatus
+from coven.decomposer.agent import DecomposerResponse, DecomposedNode, DecomposedArtifact
+from coven.decomposer.parser import DecomposerParser
+from coven.models import NodeType, NodeStatus
 
 
 # ─────────────────────────────────────────────────────────────

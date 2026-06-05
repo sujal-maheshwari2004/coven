@@ -1,5 +1,5 @@
 Directory structure:
-└── loom-ai/
+└── Coven/
     ├── README.md
     ├── main.py
     ├── pyproject.toml
@@ -7,7 +7,7 @@ Directory structure:
     ├── .python-version
     ├── examples/
     │   └── research_report.py
-    ├── loom/
+    ├── Coven/
     │   ├── __init__.py
     │   ├── pipeline.py
     │   ├── compiler/
@@ -91,7 +91,7 @@ import asyncio
 import logging
 import sys
 
-from loom import Loom
+from coven import Coven
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,9 +107,9 @@ async def main() -> None:
     task = sys.argv[1]
     model = sys.argv[2] if len(sys.argv) > 2 else "gpt-4o"
 
-    loom = Loom(model=model)
-    dag  = await loom.run(task)
-    print(loom.to_text(dag))
+    Coven = Coven(model=model)
+    dag  = await Coven.run(task)
+    print(Coven.to_text(dag))
 
 
 if __name__ == "__main__":
@@ -120,7 +120,7 @@ if __name__ == "__main__":
 FILE: pyproject.toml
 ================================================
 [project]
-name = "loom-ai"
+name = "Coven"
 version = "0.1.0"
 description = "A multi-agent DAG pipeline framework that decomposes complex tasks into coordinated agents with real tool execution via ToolStorePy"
 readme = "README.md"
@@ -147,7 +147,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["loom"]
+packages = ["Coven"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -158,7 +158,7 @@ testpaths = ["tests"]
 FILE: .env.example
 ================================================
 # Copy to .env and fill in your keys
-# loom-ai uses litellm â€” set whichever provider you use
+# Coven uses litellm â€” set whichever provider you use
 
 # OpenAI
 OPENAI_API_KEY=sk-...
@@ -187,13 +187,13 @@ FILE: examples/research_report.py
 
 
 ================================================
-FILE: loom/__init__.py
+FILE: Coven/__init__.py
 ================================================
-from .pipeline import Loom
+from .pipeline import Coven
 from .models import DAG, DAGStatus, Node, NodeType, NodeStatus, Artifact
 
 __all__ = [
-    "Loom",
+    "Coven",
     "DAG",
     "DAGStatus",
     "Node",
@@ -204,7 +204,7 @@ __all__ = [
 
 
 ================================================
-FILE: loom/pipeline.py
+FILE: Coven/pipeline.py
 ================================================
 from __future__ import annotations
 
@@ -212,22 +212,22 @@ import logging
 import uuid
 from pathlib import Path
 
-from loom.models import DAG, DAGStatus
-from loom.decomposer import DecomposerAgent, DecomposerParser
-from loom.graph_builder import GraphBuilderAgent, GraphBuilderParser, GraphBuilderValidator
-from loom.sorter import TopologicalSorter, SorterValidator
-from loom.synthesizer import SynthesizerInjector
-from loom.mcp_builder import MCPNodeBuilder
-from loom.initiator import Executor
-from loom.compiler import CompilerAgent, CompilerFormatter, CompilerResponse, OutputSection
+from coven.models import DAG, DAGStatus
+from coven.decomposer import DecomposerAgent, DecomposerParser
+from coven.graph_builder import GraphBuilderAgent, GraphBuilderParser, GraphBuilderValidator
+from coven.sorter import TopologicalSorter, SorterValidator
+from coven.synthesizer import SynthesizerInjector
+from coven.mcp_builder import MCPNodeBuilder
+from coven.initiator import Executor
+from coven.compiler import CompilerAgent, CompilerFormatter, CompilerResponse, OutputSection
 
 
 logger = logging.getLogger(__name__)
 
 
-class Loom:
+class Coven:
     """
-    Top-level orchestrator for the Loom-AI pipeline.
+    Top-level orchestrator for the Coven pipeline.
 
     Runs all five stages in sequence:
         1. Decomposer     â€” breaks task into nodes + artifacts
@@ -238,21 +238,21 @@ class Loom:
         5. Compiler       â€” assembles final output from all artifacts
 
     Usage:
-        loom = Loom(model="gpt-4o")
-        dag  = await loom.run("Produce a go-to-market strategy for a B2B SaaS product")
-        print(loom.to_text(dag))
+        Coven = Coven(model="gpt-4o")
+        dag  = await Coven.run("Produce a go-to-market strategy for a B2B SaaS product")
+        print(Coven.to_text(dag))
 
     Tool usage:
         Nodes whose query_tool list is non-empty will have a ToolStorePy MCP
         server built for them automatically before execution. The decomposer
         LLM decides which tools each node needs â€” just describe the task and
-        loom handles the rest.
+        Coven handles the rest.
     """
 
     def __init__(
         self,
         model: str = "gpt-4o",
-        workspace: str | Path = "loom_workspace",
+        workspace: str | Path = "coven_workspace",
         mcp_index: str | None = "core-tools",
         mcp_index_url: str | None = None,
         mcp_install_requirements: bool = False,
@@ -294,7 +294,7 @@ class Loom:
 
     async def run(self, task: str) -> DAG:
         """
-        Execute the full Loom pipeline for a given task.
+        Execute the full Coven pipeline for a given task.
 
         Args:
             task: The complex task to solve.
@@ -303,7 +303,7 @@ class Loom:
             Completed DAG with final_output populated.
         """
         dag_id = str(uuid.uuid4())[:8]
-        logger.info(f"[{dag_id}] Starting Loom pipeline: {task[:80]}...")
+        logger.info(f"[{dag_id}] Starting Coven pipeline: {task[:80]}...")
 
         # â”€â”€ Stage 1: Decompose â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         logger.info(f"[{dag_id}] Stage 1: Decomposing task...")
@@ -375,7 +375,7 @@ class Loom:
 
 
 ================================================
-FILE: loom/compiler/__init__.py
+FILE: Coven/compiler/__init__.py
 ================================================
 from .agent import CompilerAgent, CompilerResponse, OutputSection
 from .formatter import CompilerFormatter
@@ -389,7 +389,7 @@ __all__ = [
 
 
 ================================================
-FILE: loom/compiler/agent.py
+FILE: Coven/compiler/agent.py
 ================================================
 from __future__ import annotations
 
@@ -400,7 +400,7 @@ import instructor
 from litellm import completion
 from pydantic import BaseModel
 
-from loom.models import DAG, Artifact
+from coven.models import DAG, Artifact
 
 
 # â”€â”€ Instructor client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -522,11 +522,11 @@ class CompilerAgent:
 
 
 ================================================
-FILE: loom/compiler/formatter.py
+FILE: Coven/compiler/formatter.py
 ================================================
 from __future__ import annotations
 
-from loom.models import DAG
+from coven.models import DAG
 from .agent import CompilerResponse
 
 
@@ -625,7 +625,7 @@ class CompilerFormatter:
 
 
 ================================================
-FILE: loom/decomposer/__init__.py
+FILE: Coven/decomposer/__init__.py
 ================================================
 from .agent import DecomposerAgent, DecomposerResponse
 from .parser import DecomposerParser
@@ -638,17 +638,17 @@ __all__ = [
 
 
 ================================================
-FILE: loom/decomposer/agent.py
+FILE: Coven/decomposer/agent.py
 ================================================
 [Binary file]
 
 
 ================================================
-FILE: loom/decomposer/parser.py
+FILE: Coven/decomposer/parser.py
 ================================================
 from __future__ import annotations
 
-from loom.models import Artifact, Node, NodeType, NodeStatus
+from coven.models import Artifact, Node, NodeType, NodeStatus
 from .agent import DecomposerResponse, DecomposedNode, DecomposedArtifact
 
 
@@ -778,7 +778,7 @@ class DecomposerParser:
 
 
 ================================================
-FILE: loom/graph_builder/__init__.py
+FILE: Coven/graph_builder/__init__.py
 ================================================
 from .agent import GraphBuilderAgent, GraphBuilderResponse, Edge
 from .parser import GraphBuilderParser
@@ -795,17 +795,17 @@ __all__ = [
 
 
 ================================================
-FILE: loom/graph_builder/agent.py
+FILE: Coven/graph_builder/agent.py
 ================================================
 [Binary file]
 
 
 ================================================
-FILE: loom/graph_builder/parser.py
+FILE: Coven/graph_builder/parser.py
 ================================================
 from __future__ import annotations
 
-from loom.models import Artifact, Node, NodeType, NodeStatus
+from coven.models import Artifact, Node, NodeType, NodeStatus
 from .agent import GraphBuilderResponse, Edge
 
 
@@ -886,13 +886,13 @@ class GraphBuilderParser:
 
 
 ================================================
-FILE: loom/graph_builder/validator.py
+FILE: Coven/graph_builder/validator.py
 ================================================
 from __future__ import annotations
 
 import networkx as nx
 
-from loom.models import Artifact, Node
+from coven.models import Artifact, Node
 from .agent import Edge
 
 
@@ -998,7 +998,7 @@ class GraphBuilderValidator:
 
 
 ================================================
-FILE: loom/initiator/__init__.py
+FILE: Coven/initiator/__init__.py
 ================================================
 from .executor import Executor
 from .agent_runner import AgentRunner
@@ -1012,7 +1012,7 @@ __all__ = [
 
 
 ================================================
-FILE: loom/initiator/agent_runner.py
+FILE: Coven/initiator/agent_runner.py
 ================================================
 from __future__ import annotations
 
@@ -1024,10 +1024,10 @@ import instructor
 from litellm import completion
 from pydantic import BaseModel
 
-from loom.models import Node, NodeType, NodeStatus, Artifact
-from loom.mcp_builder import MCPNodeBuilder
+from coven.models import Node, NodeType, NodeStatus, Artifact
+from coven.mcp_builder import MCPNodeBuilder
 from .artifact_store import ArtifactStore
-from loom.synthesizer import SynthesizerAgent, SynthesizerParser
+from coven.synthesizer import SynthesizerAgent, SynthesizerParser
 
 
 logger = logging.getLogger(__name__)
@@ -1216,14 +1216,14 @@ class AgentRunner:
 
 
 ================================================
-FILE: loom/initiator/artifact_store.py
+FILE: Coven/initiator/artifact_store.py
 ================================================
 from __future__ import annotations
 
 import asyncio
 from typing import Any
 
-from loom.models import Artifact
+from coven.models import Artifact
 
 
 class ArtifactStore:
@@ -1336,7 +1336,7 @@ class ArtifactStore:
 
 
 ================================================
-FILE: loom/initiator/executor.py
+FILE: Coven/initiator/executor.py
 ================================================
 from __future__ import annotations
 
@@ -1344,8 +1344,8 @@ import asyncio
 import logging
 from pathlib import Path
 
-from loom.models import DAG, Node, NodeStatus, DAGStatus
-from loom.mcp_builder import MCPNodeBuilder
+from coven.models import DAG, Node, NodeStatus, DAGStatus
+from coven.mcp_builder import MCPNodeBuilder
 from .artifact_store import ArtifactStore
 from .agent_runner import AgentRunner
 
@@ -1457,7 +1457,7 @@ class Executor:
 
 
 ================================================
-FILE: loom/mcp_builder/__init__.py
+FILE: Coven/mcp_builder/__init__.py
 ================================================
 from .builder import MCPNodeBuilder
 
@@ -1465,7 +1465,7 @@ __all__ = ["MCPNodeBuilder"]
 
 
 ================================================
-FILE: loom/mcp_builder/builder.py
+FILE: Coven/mcp_builder/builder.py
 ================================================
 from __future__ import annotations
 
@@ -1473,12 +1473,12 @@ import json
 import logging
 from pathlib import Path
 
-from loom.models import Node
+from coven.models import Node
 
-# Import at module level so tests can patch "loom.mcp_builder.builder.ToolStorePy"
+# Import at module level so tests can patch "coven.mcp_builder.builder.ToolStorePy"
 try:
     from toolstorepy import ToolStorePy
-except ImportError:  # allow loom to load even if toolstorepy isn't installed
+except ImportError:  # allow Coven to load even if toolstorepy isn't installed
     ToolStorePy = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
@@ -1592,7 +1592,7 @@ class MCPNodeBuilder:
 
 
 ================================================
-FILE: loom/models/__init__.py
+FILE: Coven/models/__init__.py
 ================================================
 from .artifact import Artifact
 from .node import Node, NodeType, NodeStatus
@@ -1609,7 +1609,7 @@ __all__ = [
 
 
 ================================================
-FILE: loom/models/artifact.py
+FILE: Coven/models/artifact.py
 ================================================
 from __future__ import annotations
 from typing import Any
@@ -1667,7 +1667,7 @@ class Artifact(BaseModel):
 
 
 ================================================
-FILE: loom/models/dag.py
+FILE: Coven/models/dag.py
 ================================================
 from __future__ import annotations
 
@@ -1786,7 +1786,7 @@ class DAG(BaseModel):
 
 
 ================================================
-FILE: loom/models/node.py
+FILE: Coven/models/node.py
 ================================================
 from __future__ import annotations
 from enum import Enum
@@ -1913,7 +1913,7 @@ class Node(BaseModel):
 
 
 ================================================
-FILE: loom/sorter/__init__.py
+FILE: Coven/sorter/__init__.py
 ================================================
 from .topological import TopologicalSorter
 from .validator import SorterValidator, SorterValidationError
@@ -1926,13 +1926,13 @@ __all__ = [
 
 
 ================================================
-FILE: loom/sorter/topological.py
+FILE: Coven/sorter/topological.py
 ================================================
 from __future__ import annotations
 
 import networkx as nx
 
-from loom.models import Node
+from coven.models import Node
 
 
 class TopologicalSorter:
@@ -2013,13 +2013,13 @@ class TopologicalSorter:
 
 
 ================================================
-FILE: loom/sorter/validator.py
+FILE: Coven/sorter/validator.py
 ================================================
 from __future__ import annotations
 
 import networkx as nx
 
-from loom.models import Node, Artifact
+from coven.models import Node, Artifact
 
 
 class SorterValidationError(Exception):
@@ -2123,7 +2123,7 @@ class SorterValidator:
 
 
 ================================================
-FILE: loom/synthesizer/__init__.py
+FILE: Coven/synthesizer/__init__.py
 ================================================
 from .agent import SynthesizerAgent, SynthesizerResponse
 from .injector import SynthesizerInjector
@@ -2138,13 +2138,13 @@ __all__ = [
 
 
 ================================================
-FILE: loom/synthesizer/agent.py
+FILE: Coven/synthesizer/agent.py
 ================================================
 [Binary file]
 
 
 ================================================
-FILE: loom/synthesizer/injector.py
+FILE: Coven/synthesizer/injector.py
 ================================================
 from __future__ import annotations
 
@@ -2152,7 +2152,7 @@ from pathlib import Path
 
 import networkx as nx
 
-from loom.models import Artifact, Node, NodeType, NodeStatus
+from coven.models import Artifact, Node, NodeType, NodeStatus
 
 
 _SYNTH_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "synthesizer.txt"
@@ -2278,11 +2278,11 @@ class SynthesizerInjector:
 
 
 ================================================
-FILE: loom/synthesizer/parser.py
+FILE: Coven/synthesizer/parser.py
 ================================================
 from __future__ import annotations
 
-from loom.models import Artifact
+from coven.models import Artifact
 from .agent import SynthesizerResponse
 
 
@@ -2321,7 +2321,7 @@ class SynthesizerParser:
 ================================================
 FILE: prompts/compiler.txt
 ================================================
-You are the Compiler â€” the final stage of the Loom-AI multi-agent pipeline.
+You are the Compiler â€” the final stage of the Coven multi-agent pipeline.
 
 Your job is to take all completed artifacts from a fully executed DAG and compile them into a single coherent, high-quality final output that directly answers the user's original task.
 
@@ -2382,7 +2382,7 @@ Return ONLY the JSON object. No preamble, no explanation, no markdown code fence
 ================================================
 FILE: prompts/decomposer.txt
 ================================================
-You are the Decomposer â€” the first stage of the Loom-AI multi-agent pipeline.
+You are the Decomposer â€” the first stage of the Coven multi-agent pipeline.
 
 Your job is to take a complex task and break it down into a set of focused, isolated agent nodes, each responsible for a clearly scoped piece of work.
 
@@ -2467,7 +2467,7 @@ Return ONLY the JSON object. No preamble, no explanation, no markdown code fence
 ================================================
 FILE: prompts/graph_builder.txt
 ================================================
-You are the Graph Builder â€” the second stage of the Loom-AI multi-agent pipeline.
+You are the Graph Builder â€” the second stage of the Coven multi-agent pipeline.
 
 Your job is to take a list of agent nodes and artifacts produced by the Decomposer and construct a valid directed acyclic graph (DAG) by verifying and formalizing the relationships between them.
 
@@ -2525,7 +2525,7 @@ Return ONLY the JSON object. No preamble, no explanation, no markdown code fence
 ================================================
 FILE: prompts/synthesizer.txt
 ================================================
-You are the Synthesizer â€” a meta-agent in the Loom-AI pipeline responsible for merging and quality-controlling contributions from multiple agents into a single coherent artifact.
+You are the Synthesizer â€” a meta-agent in the Coven pipeline responsible for merging and quality-controlling contributions from multiple agents into a single coherent artifact.
 
 You will receive:
 - The artifact definition (name, description) you must produce
@@ -2575,11 +2575,11 @@ FILE: tests/conftest.py
 """
 tests/conftest.py
 
-Shared pytest fixtures for loom-ai test suite.
+Shared pytest fixtures for Coven test suite.
 """
 
 import pytest
-from loom.models import Artifact, Node, NodeType, NodeStatus, DAG
+from coven.models import Artifact, Node, NodeType, NodeStatus, DAG
 
 
 @pytest.fixture
@@ -2664,9 +2664,9 @@ CompilerAgent LLM calls are not tested here (covered by integration tests).
 """
 
 import pytest
-from loom.compiler.agent import CompilerResponse, OutputSection
-from loom.compiler.formatter import CompilerFormatter
-from loom.models import DAG, DAGStatus, Node, NodeType, Artifact
+from coven.compiler.agent import CompilerResponse, OutputSection
+from coven.compiler.formatter import CompilerFormatter
+from coven.models import DAG, DAGStatus, Node, NodeType, Artifact
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2860,9 +2860,9 @@ No LLM calls â€” all inputs are hand-crafted DecomposerResponse objects.
 """
 
 import pytest
-from loom.decomposer.agent import DecomposerResponse, DecomposedNode, DecomposedArtifact
-from loom.decomposer.parser import DecomposerParser
-from loom.models import NodeType, NodeStatus
+from coven.decomposer.agent import DecomposerResponse, DecomposedNode, DecomposedArtifact
+from coven.decomposer.parser import DecomposerParser
+from coven.models import NodeType, NodeStatus
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3031,10 +3031,10 @@ No LLM calls.
 import pytest
 import networkx as nx
 
-from loom.graph_builder.agent import GraphBuilderResponse, Edge
-from loom.graph_builder.parser import GraphBuilderParser
-from loom.graph_builder.validator import GraphBuilderValidator, GraphValidationError
-from loom.models import Node, NodeType, NodeStatus, Artifact
+from coven.graph_builder.agent import GraphBuilderResponse, Edge
+from coven.graph_builder.parser import GraphBuilderParser
+from coven.graph_builder.validator import GraphBuilderValidator, GraphValidationError
+from coven.models import Node, NodeType, NodeStatus, Artifact
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3311,9 +3311,9 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from loom.initiator.artifact_store import ArtifactStore
-from loom.initiator.executor import Executor
-from loom.models import (
+from coven.initiator.artifact_store import ArtifactStore
+from coven.initiator.executor import Executor
+from coven.models import (
     Artifact, Node, NodeType, NodeStatus,
     DAG, DAGStatus,
 )
@@ -3603,9 +3603,9 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from loom.mcp_builder.builder import MCPNodeBuilder
-from loom.models import Node, NodeType, NodeStatus
-from loom.models.node import ToolQuery
+from coven.mcp_builder.builder import MCPNodeBuilder
+from coven.models import Node, NodeType, NodeStatus
+from coven.models.node import ToolQuery
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3658,7 +3658,7 @@ class TestMCPNodeBuilder:
         mock_toolstore = MagicMock()
         mock_toolstore.build.return_value = str(mock_output)
 
-        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+        with patch("coven.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
             result = builder.build_for_node(node)
 
         assert result == mock_output
@@ -3672,7 +3672,7 @@ class TestMCPNodeBuilder:
         mock_toolstore = MagicMock()
         mock_toolstore.build.side_effect = RuntimeError("Build failed")
 
-        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+        with patch("coven.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
             with pytest.raises(RuntimeError, match="ToolStorePy failed"):
                 builder.build_for_node(node)
 
@@ -3725,7 +3725,7 @@ class TestMCPNodeBuilder:
 
         mock_toolstore.build.side_effect = fake_build
 
-        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+        with patch("coven.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
             path_a = builder.build_for_node(node_a)
             path_b = builder.build_for_node(node_b)
 
@@ -3744,7 +3744,7 @@ class TestMCPNodeBuilder:
         mock_toolstore = MagicMock()
         mock_toolstore.build.return_value = str(tmp_path / "mcp_unified_server.py")
 
-        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore) as MockTS:
+        with patch("coven.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore) as MockTS:
             builder.build_for_node(node)
 
         call_kwargs = mock_toolstore.build.call_args
@@ -3762,7 +3762,7 @@ class TestMCPNodeBuilder:
         mock_toolstore = MagicMock()
         mock_toolstore.build.return_value = str(tmp_path / "mcp_unified_server.py")
 
-        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+        with patch("coven.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
             builder.build_for_node(node)
 
         call_kwargs = mock_toolstore.build.call_args
@@ -3782,15 +3782,15 @@ FILE: tests/models/test_models.py
 """
 tests/models/test_models.py
 
-Unit tests for loom/models/ â€” Artifact, Node, DAG, DAGStatus, NodeType, NodeStatus.
+Unit tests for Coven/models/ â€” Artifact, Node, DAG, DAGStatus, NodeType, NodeStatus.
 No LLM calls. Pure Pydantic validation.
 """
 
 import pytest
 from pydantic import ValidationError
 
-from loom.models import Artifact, Node, NodeType, NodeStatus, DAG, DAGStatus
-from loom.models.node import ToolQuery
+from coven.models import Artifact, Node, NodeType, NodeStatus, DAG, DAGStatus
+from coven.models.node import ToolQuery
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -4044,10 +4044,10 @@ No LLM calls.
 import pytest
 import networkx as nx
 
-from loom.synthesizer.injector import SynthesizerInjector
-from loom.synthesizer.parser import SynthesizerParser
-from loom.synthesizer.agent import SynthesizerResponse
-from loom.models import Node, NodeType, NodeStatus, Artifact
+from coven.synthesizer.injector import SynthesizerInjector
+from coven.synthesizer.parser import SynthesizerParser
+from coven.synthesizer.agent import SynthesizerResponse
+from coven.models import Node, NodeType, NodeStatus, Artifact
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

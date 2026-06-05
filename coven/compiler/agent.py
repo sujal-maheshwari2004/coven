@@ -7,7 +7,7 @@ import instructor
 from litellm import completion
 from pydantic import BaseModel
 
-from loom.models import DAG, Artifact
+from coven.models import DAG, Artifact
 
 
 # ── Instructor client ─────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import sys
 
-from loom import Loom
+from coven import Coven
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,9 +18,9 @@ async def main() -> None:
     task = sys.argv[1]
     model = sys.argv[2] if len(sys.argv) > 2 else "gpt-4o"
 
-    loom = Loom(model=model)
-    dag  = await loom.run(task)
-    print(loom.to_text(dag))
+    coven = Coven(model=model)
+    dag  = await coven.run(task)
+    print(coven.to_text(dag))
 
 
 if __name__ == "__main__":

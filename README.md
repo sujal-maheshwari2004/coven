@@ -155,6 +155,10 @@ Coven(
     mcp_index="core-tools",            # ToolStorePy built-in index (default)
     mcp_index_url=None,                # Custom index URL — overrides mcp_index
     mcp_install_requirements=False,    # Install tool repo requirements in venv
+    mcp_host="0.0.0.0",               # Host MCP servers bind on
+    mcp_base_port=8100,               # Starting port; each node gets the next port
+    mcp_llm_scan=False,               # LLM-based security review (autonomous, no prompts)
+    mcp_llm_model="claude-sonnet-4-6", # Model for LLM security scanning
     mcp_verbose=False,                 # Verbose ToolStorePy logging
 )
 ```

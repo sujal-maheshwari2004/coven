@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from loom.models import Node, Artifact
+from coven.models import Node, Artifact
 
 
 class SorterValidationError(Exception):

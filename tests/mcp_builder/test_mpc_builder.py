@@ -10,9 +10,9 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from loom.mcp_builder.builder import MCPNodeBuilder
-from loom.models import Node, NodeType, NodeStatus
-from loom.models.node import ToolQuery
+from coven.mcp_builder.builder import MCPNodeBuilder
+from coven.models import Node, NodeType, NodeStatus
+from coven.models.node import ToolQuery
 
 
 # ─────────────────────────────────────────────────────────────
@@ -65,10 +65,12 @@ class TestMCPNodeBuilder:
         mock_toolstore = MagicMock()
         mock_toolstore.build.return_value = str(mock_output)
 
-        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+        with patch("coven.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
             result = builder.build_for_node(node)
 
-        assert result == mock_output
+        assert result is not None
+        assert result.path == mock_output
+        assert isinstance(result.port, int)
 
     def test_build_for_node_raises_on_toolstorepy_failure(self, tmp_path):
         builder = _make_builder(tmp_path)
@@ -79,7 +81,7 @@ class TestMCPNodeBuilder:
         mock_toolstore = MagicMock()
         mock_toolstore.build.side_effect = RuntimeError("Build failed")
 
-        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+        with patch("coven.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
             with pytest.raises(RuntimeError, match="ToolStorePy failed"):
                 builder.build_for_node(node)
 
@@ -132,7 +134,7 @@ class TestMCPNodeBuilder:
 
         mock_toolstore.build.side_effect = fake_build
 
-        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+        with patch("coven.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
             path_a = builder.build_for_node(node_a)
             path_b = builder.build_for_node(node_b)
 
@@ -151,7 +153,7 @@ class TestMCPNodeBuilder:
         mock_toolstore = MagicMock()
         mock_toolstore.build.return_value = str(tmp_path / "mcp_unified_server.py")
 
-        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore) as MockTS:
+        with patch("coven.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore) as MockTS:
             builder.build_for_node(node)
 
         call_kwargs = mock_toolstore.build.call_args
@@ -169,7 +171,7 @@ class TestMCPNodeBuilder:
         mock_toolstore = MagicMock()
         mock_toolstore.build.return_value = str(tmp_path / "mcp_unified_server.py")
 
-        with patch("loom.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
+        with patch("coven.mcp_builder.builder.ToolStorePy", return_value=mock_toolstore):
             builder.build_for_node(node)
 
         call_kwargs = mock_toolstore.build.call_args

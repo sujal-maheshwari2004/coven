@@ -6,9 +6,9 @@ CompilerAgent LLM calls are not tested here (covered by integration tests).
 """
 
 import pytest
-from loom.compiler.agent import CompilerResponse, OutputSection
-from loom.compiler.formatter import CompilerFormatter
-from loom.models import DAG, DAGStatus, Node, NodeType, Artifact
+from coven.compiler.agent import CompilerResponse, OutputSection
+from coven.compiler.formatter import CompilerFormatter
+from coven.models import DAG, DAGStatus, Node, NodeType, Artifact
 
 
 # ─────────────────────────────────────────────────────────────

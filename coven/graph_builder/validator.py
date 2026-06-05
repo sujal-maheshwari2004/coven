@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from loom.models import Artifact, Node
+from coven.models import Artifact, Node
 from .agent import Edge
 
 

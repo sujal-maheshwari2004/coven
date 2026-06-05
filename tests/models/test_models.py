@@ -1,15 +1,15 @@
 """
 tests/models/test_models.py
 
-Unit tests for loom/models/ — Artifact, Node, DAG, DAGStatus, NodeType, NodeStatus.
+Unit tests for Coven/models/ — Artifact, Node, DAG, DAGStatus, NodeType, NodeStatus.
 No LLM calls. Pure Pydantic validation.
 """
 
 import pytest
 from pydantic import ValidationError
 
-from loom.models import Artifact, Node, NodeType, NodeStatus, DAG, DAGStatus
-from loom.models.node import ToolQuery
+from coven.models import Artifact, Node, NodeType, NodeStatus, DAG, DAGStatus
+from coven.models.node import ToolQuery
 
 
 # ─────────────────────────────────────────────────────────────

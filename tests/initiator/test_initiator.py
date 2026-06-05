@@ -9,9 +9,9 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from loom.initiator.artifact_store import ArtifactStore
-from loom.initiator.executor import Executor
-from loom.models import (
+from coven.initiator.artifact_store import ArtifactStore
+from coven.initiator.executor import Executor
+from coven.models import (
     Artifact, Node, NodeType, NodeStatus,
     DAG, DAGStatus,
 )

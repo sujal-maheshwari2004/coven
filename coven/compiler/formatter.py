@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from loom.models import DAG
+from coven.models import DAG
 from .agent import CompilerResponse
 
 

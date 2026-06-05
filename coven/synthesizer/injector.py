@@ -4,7 +4,7 @@ from pathlib import Path
 
 import networkx as nx
 
-from loom.models import Artifact, Node, NodeType, NodeStatus
+from coven.models import Artifact, Node, NodeType, NodeStatus
 
 
 _SYNTH_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "synthesizer.txt"

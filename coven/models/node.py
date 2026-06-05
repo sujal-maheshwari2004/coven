@@ -120,3 +120,8 @@ class Node(BaseModel):
         default=None,
         description="Absolute path to the ToolStorePy-built MCP server. Set at runtime."
     )
+
+    mcp_server_port: int | None = Field(
+        default=None,
+        description="Port the MCP server is configured to listen on. Set at runtime."
+    )
